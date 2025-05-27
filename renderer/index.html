@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestor de Documentos - Consorcio Presa Sullana</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>Gestor de Documentos</h1>
+    </header>
+
+    <div class="indexing-panel">
+      <h3>Configuración de Indexación</h3>
+      <div class="indexing-form">
+        <div class="form-group">
+          <label for="folderPath">Ruta a indexar:</label>
+          <div class="path-input-group">
+            <input type="text" id="folderPath" placeholder="Seleccione una carpeta..." readonly>
+            <button id="browseFolderBtn" class="secondary-btn">Examinar</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <button id="indexFolderBtn" class="primary-btn" disabled>Indexar Ruta</button>
+          <span id="indexingStatus" class="status-text hidden"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="search-panel">
+      <h3>Búsqueda de Documentos</h3>
+      <div class="search-form">
+        <div class="form-group">
+          <label for="keyword">Palabra clave / Asunto:</label>
+          <input type="text" id="keyword" placeholder="Términos de búsqueda...">
+        </div>
+
+        <div class="form-group">
+          <label for="dateFrom">Fecha desde:</label>
+          <input type="date" id="dateFrom">
+        </div>
+
+        <div class="form-group">
+          <label for="dateTo">Fecha hasta:</label>
+          <input type="date" id="dateTo">
+        </div>
+
+        <div class="form-group">
+          <label for="documentType">Tipo de documento:</label>
+          <select id="documentType">
+            <option value="">Todos</option>
+            <option value="carta">Carta</option>
+            <option value="informe">Informe</option>
+            <option value="contrato">Contrato</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="grid-column: 1 / -1;">
+          <div style="display: flex; gap: 12px; justify-content: center; margin-top: 16px;">
+            <button id="searchBtn" class="primary-btn">Buscar</button>
+            <button id="resetBtn" class="secondary-btn">Limpiar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="results-panel">
+      <h3>Resultados</h3>
+      <div id="loading" class="hidden">Buscando documentos...</div>
+      <div id="results-container"></div>
+    </div>
+  </div>
+
+
+
+  <!-- Scripts -->
+  <script src="script.js"></script>
+</body>
+
+</html>
