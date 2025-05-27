@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   seleccionarCarpeta: () => ipcRenderer.invoke('seleccionar-carpeta'),
   indexarCarpetaEspecifica: (rutaCarpeta) => ipcRenderer.invoke('indexar-carpeta-especifica', rutaCarpeta),
   
+  // NUEVAS FUNCIONES PARA CONTROL DE INDEXACIÓN
+  pausarIndexacion: () => ipcRenderer.invoke('pausar-indexacion'),
+  reanudarIndexacion: () => ipcRenderer.invoke('reanudar-indexacion'),
+  cancelarIndexacion: () => ipcRenderer.invoke('cancelar-indexacion'),
+  
   // NUEVA FUNCIÓN PARA EDITAR ASUNTO
   actualizarAsuntoDocumento: (ruta, nuevoAsunto) => ipcRenderer.invoke('actualizar-asunto-documento', { ruta, nuevoAsunto }),
   
@@ -21,8 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('procesar-documento-nuevo', { documento, asunto }),
   configurarVerificacionAutomatica: (activa) => 
     ipcRenderer.invoke('configurar-verificacion-automatica', { activa }),
-  
-  // Receptor de eventos para cuando se detecten documentos nuevos
+    // Receptor de eventos para cuando se detecten documentos nuevos
   onDocumentosNuevosDetectados: (callback) => {
     // Almacenar la referencia para poder eliminarla
     const subscription = (event, documentos) => callback(documentos);
@@ -31,6 +35,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Devolver una función para eliminar el listener cuando ya no sea necesario
     return () => {
       ipcRenderer.removeListener('documentos-nuevos-detectados', subscription);
+    };
+  },
+
+  // NUEVO: Receptor de eventos para progreso de indexación
+  onIndexacionProgreso: (callback) => {
+    const subscription = (event, data) => callback(data);
+    ipcRenderer.on('indexacion-progreso', subscription);
+    
+    return () => {
+      ipcRenderer.removeListener('indexacion-progreso', subscription);
     };
   }
 });
