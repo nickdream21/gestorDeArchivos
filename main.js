@@ -7,6 +7,11 @@ const wordParser = require('./src/utils/word-parser');
 
 const driveApi = require('./src/drive/api');
 
+// VARIABLES GLOBALES PARA CONTROL DE INDEXACIÓN
+let indexacionEnProgreso = false;
+let indexacionPausada = false;
+let indexacionCancelada = false;
+
 // Añadir manejo de errores global
 process.on('uncaughtException', (error) => {
   console.error('Error no capturado:', error);
@@ -326,8 +331,7 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
         errores++;
       }
     }
-    
-    const mensaje = `Indexación de carpeta completada. ${indexados} documentos nuevos indexados. ${yaExisten} ya existían. ${errores} errores.`;
+      const mensaje = `Indexación de carpeta completada. ${indexados} documentos nuevos indexados. ${yaExisten} ya existían. ${errores} errores.`;
     console.log(mensaje);
     return { 
       success: true, 
@@ -339,6 +343,264 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
     };
   } catch (error) {
     console.error('Error durante la indexación de carpeta específica:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Función auxiliar para formatear tiempo en MM:SS
+function formatearTiempo(segundos) {
+  const minutos = Math.floor(segundos / 60);
+  const segs = segundos % 60;
+  return `${minutos.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}`;
+}
+
+// NUEVA FUNCIÓN DE INDEXACIÓN CON PROGRESO EN TIEMPO REAL
+async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
+  try {
+    console.log(`Iniciando indexación con progreso en tiempo real: ${rutaCarpeta}`);
+    
+    // Inicializar variables de control
+    indexacionEnProgreso = true;
+    indexacionPausada = false;
+    indexacionCancelada = false;
+    
+    // Verificar que la carpeta existe
+    if (!fs.existsSync(rutaCarpeta)) {
+      throw new Error('La carpeta especificada no existe');
+    }
+    
+    // Función recursiva para obtener todos los archivos válidos
+    function obtenerArchivosValidos(directorio) {
+      const archivos = [];
+      
+      try {
+        const elementos = fs.readdirSync(directorio);
+        
+        for (const elemento of elementos) {
+          const rutaCompleta = path.join(directorio, elemento);
+          const stats = fs.statSync(rutaCompleta);
+          
+          if (stats.isDirectory()) {
+            archivos.push(...obtenerArchivosValidos(rutaCompleta));
+          } else if (stats.isFile() && esArchivoValido(rutaCompleta)) {
+            const extension = path.extname(rutaCompleta).toLowerCase();
+            
+            archivos.push({
+              nombre: elemento,
+              ruta: rutaCompleta,
+              tipo: determinarTipoDocumento(elemento),
+              fecha: stats.mtime.toISOString().split('T')[0],
+              extension: extension
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`Error al leer directorio ${directorio}:`, error);
+      }
+      
+      return archivos;
+    }
+    
+    function determinarTipoDocumento(nombre) {
+      nombre = nombre.toLowerCase();
+      
+      if (nombre.includes('carta') || nombre.startsWith('carta')) {
+        return 'carta';
+      } else if (nombre.includes('informe')) {
+        return 'informe';
+      } else if (nombre.includes('contrato')) {
+        return 'contrato';
+      } else if (nombre.includes('memo') || nombre.includes('memorando')) {
+        return 'memorando';
+      } else if (nombre.includes('acta')) {
+        return 'acta';
+      } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
+        return 'resolución';
+      } else {
+        return 'otro';
+      }
+    }
+    
+    // Obtener todos los archivos válidos
+    const documentos = obtenerArchivosValidos(rutaCarpeta);
+    console.log(`Se encontraron ${documentos.length} documentos válidos.`);
+    
+    // Enviar información inicial al frontend
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('indexacion-progreso', {
+        tipo: 'inicio',
+        total: documentos.length,
+        processed: 0,
+        success: 0,
+        errors: 0,
+        currentFile: 'Iniciando indexación...'
+      });
+    }
+    
+    let indexados = 0;
+    let exitosos = 0;
+    let errores = 0;
+    let yaExisten = 0;
+    const tiempoInicio = Date.now();
+    
+    // Procesar cada documento
+    for (let i = 0; i < documentos.length; i++) {
+      const doc = documentos[i];
+      
+      // VERIFICAR CONTROL DE PAUSA
+      while (indexacionPausada && !indexacionCancelada) {
+        await new Promise(resolve => setTimeout(resolve, 100)); // Esperar 100ms
+      }
+      
+      // VERIFICAR CONTROL DE CANCELACIÓN
+      if (indexacionCancelada) {
+        console.log('Indexación cancelada por el usuario');
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('indexacion-progreso', {
+            tipo: 'cancelado',
+            total: documentos.length,
+            processed: indexados,
+            success: exitosos,
+            errors: errores,
+            existing: yaExisten,
+            currentFile: 'Cancelado por el usuario',
+            elapsedTime: formatearTiempo(Math.floor((Date.now() - tiempoInicio) / 1000)),
+            estimatedTime: 'Cancelado'
+          });
+        }
+        break;
+      }
+
+      try {
+        // Calcular tiempo transcurrido y estimado
+        const tiempoTranscurrido = Math.floor((Date.now() - tiempoInicio) / 1000);
+        const tiempoEstimado = indexados > 0 ? 
+          Math.floor((tiempoTranscurrido / indexados) * (documentos.length - indexados)) : 0;
+        
+        // Enviar progreso actual al frontend
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('indexacion-progreso', {
+            tipo: 'progreso',
+            total: documentos.length,
+            processed: indexados,
+            success: exitosos,
+            errors: errores,
+            currentFile: doc.nombre,
+            elapsedTime: formatearTiempo(tiempoTranscurrido),
+            estimatedTime: formatearTiempo(tiempoEstimado),
+            percentage: Math.round((indexados / documentos.length) * 100)
+          });
+        }
+        
+        // Verificar si ya existe en la base de datos
+        const existe = await database.documentoExiste(doc.ruta);
+        if (existe) {
+          console.log(`El documento ya existe: ${doc.nombre}`);
+          yaExisten++;
+          indexados++;
+          continue;
+        }
+        
+        // Procesar el documento
+        console.log(`Procesando ${doc.extension.toUpperCase()}: ${doc.nombre}`);
+        
+        const infoPromise = procesarArchivo(doc.ruta);
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 15000);
+        });
+        
+        let documentoInfo;
+        try {
+          documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
+          
+          // Guardar en la base de datos
+          await database.agregarDocumento({
+            nombre: doc.nombre,
+            ruta: doc.ruta,
+            tipo: doc.tipo,
+            fecha: doc.fecha,
+            asunto: documentoInfo.asunto || 'Sin asunto',
+            contenido: documentoInfo.texto || ''
+          });
+          
+          exitosos++;
+          
+        } catch (docError) {
+          console.error(`Error al procesar ${doc.nombre}: ${docError.message}`);
+          errores++;
+          
+          // Enviar error específico al frontend
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('indexacion-progreso', {
+              tipo: 'error',
+              archivo: doc.nombre,
+              error: docError.message
+            });
+          }
+        }
+        
+        indexados++;
+        
+      } catch (generalError) {
+        console.error(`Error general al procesar ${doc.nombre}:`, generalError);
+        errores++;
+        indexados++;
+      }
+    }
+      // Finalizar indexación
+    indexacionEnProgreso = false;
+    indexacionPausada = false;
+    
+    // Enviar progreso final solo si no se canceló
+    if (!indexacionCancelada) {
+      const tiempoTotal = Math.floor((Date.now() - tiempoInicio) / 1000);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('indexacion-progreso', {
+          tipo: 'completado',
+          total: documentos.length,
+          processed: indexados,
+          success: exitosos,
+          errors: errores,
+          existing: yaExisten,
+          currentFile: 'Indexación completada',
+          elapsedTime: formatearTiempo(tiempoTotal),
+          estimatedTime: 'Finalizado',
+          percentage: 100
+        });
+      }
+    }
+    
+    const mensaje = indexacionCancelada ? 
+      `Cancelado: ${exitosos} procesados, ${yaExisten} existían, ${errores} errores` :
+      `Completado: ${exitosos} nuevos, ${yaExisten} existían, ${errores} errores`;
+    console.log(mensaje);
+    
+    // Resetear flag de cancelación para próxima ejecución
+    indexacionCancelada = false;
+    
+    return { 
+      success: true, 
+      message: mensaje,
+      documentosIndexados: exitosos,
+      documentosExistentes: yaExisten,
+      errores: errores,
+      total: documentos.length
+    };  } catch (error) {
+    console.error('Error durante la indexación:', error);
+    
+    // Resetear variables de control en caso de error
+    indexacionEnProgreso = false;
+    indexacionPausada = false;
+    indexacionCancelada = false;
+    
+    // Enviar error al frontend
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('indexacion-progreso', {
+        tipo: 'error-general',
+        error: error.message
+      });
+    }
+    
     return { success: false, error: error.message };
   }
 }
@@ -527,7 +789,7 @@ ipcMain.handle('seleccionar-carpeta', async (event) => {
 ipcMain.handle('indexar-carpeta-especifica', async (event, rutaCarpeta) => {
   try {
     console.log(`Solicitud de indexación de carpeta específica: ${rutaCarpeta}`);
-    const resultado = await indexarCarpetaEspecifica(rutaCarpeta);
+    const resultado = await indexarCarpetaEspecificaConProgreso(rutaCarpeta);
     return resultado;
   } catch (error) {
     console.error('Error durante la indexación de carpeta específica:', error);
@@ -568,7 +830,7 @@ ipcMain.handle('procesar-documento-nuevo', async (event, { documento, asunto }) 
 });
 
 ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) => {
-  verificacionAutomaticaActiva = !!activa;
+  verificacionAutomaticaActiva = false;
   console.log(`Verificación automática ${verificacionAutomaticaActiva ? 'activada' : 'desactivada'}`);
   
   // Si se está activando y no hay timer, iniciarlo
@@ -612,5 +874,48 @@ ipcMain.handle('actualizar-asunto-documento', async (event, { ruta, nuevoAsunto 
       success: false, 
       error: error.message 
     };
+  }
+});
+
+// NUEVOS MANEJADORES IPC PARA CONTROL DE INDEXACIÓN
+ipcMain.handle('pausar-indexacion', async (event) => {
+  try {
+    if (indexacionEnProgreso && !indexacionPausada) {
+      indexacionPausada = true;
+      console.log('Indexación pausada por el usuario');
+      return { success: true, message: 'Indexación pausada' };
+    }
+    return { success: false, message: 'No hay indexación en progreso o ya está pausada' };
+  } catch (error) {
+    console.error('Error al pausar indexación:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('reanudar-indexacion', async (event) => {
+  try {
+    if (indexacionEnProgreso && indexacionPausada) {
+      indexacionPausada = false;
+      console.log('Indexación reanudada por el usuario');
+      return { success: true, message: 'Indexación reanudada' };
+    }
+    return { success: false, message: 'No hay indexación pausada para reanudar' };
+  } catch (error) {
+    console.error('Error al reanudar indexación:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('cancelar-indexacion', async (event) => {
+  try {
+    if (indexacionEnProgreso) {
+      indexacionCancelada = true;
+      console.log('Indexación cancelada por el usuario');
+      return { success: true, message: 'Indexación cancelada' };
+    }
+    return { success: false, message: 'No hay indexación en progreso para cancelar' };
+  } catch (error) {
+    console.error('Error al cancelar indexación:', error);
+    return { success: false, error: error.message };
   }
 });
