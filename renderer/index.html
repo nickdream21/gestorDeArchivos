@@ -32,6 +32,83 @@
       </div>
     </div>
 
+    <!-- Modal de Progreso de Indexación -->
+    <!-- Sección de Progreso Integrada (reemplaza el modal) -->
+    <div id="progress-section" class="progress-panel hidden">
+      <div class="progress-header-inline">
+        <h3>🗂️ Indexando Documentos</h3>
+        <button id="cancel-progress-btn" class="cancel-progress-btn">Cancelar</button>
+      </div>      <!-- Barra de Progreso Principal -->
+      <div class="main-progress-bar">
+        <div id="main-progress-fill" class="main-progress-fill"></div>
+        <div class="progress-text">
+          <span id="main-progress-percentage">0%</span>
+        </div>
+      </div>
+
+      <!-- Contadores Principales -->
+      <div class="progress-counters">
+        <div class="counter-item">
+          <div class="counter-number" id="counter-total">0</div>
+          <div class="counter-label">TOTAL</div>
+        </div>
+        <div class="counter-item">
+          <div class="counter-number" id="counter-processed">0</div>
+          <div class="counter-label">PROCESADOS</div>
+        </div>
+        <div class="counter-item success">
+          <div class="counter-number" id="counter-success">0</div>
+          <div class="counter-label">EXITOSOS</div>
+        </div>
+        <div class="counter-item error">
+          <div class="counter-number" id="counter-errors">0</div>
+          <div class="counter-label">ERRORES</div>
+        </div>
+      </div>
+
+      <!-- Archivo Actual y Tiempo -->
+      <div class="progress-details">
+        <div class="current-processing">
+          <label>Procesando:</label>
+          <div id="current-processing-file" class="processing-filename">
+            Esperando...
+          </div>
+        </div>
+
+        <div class="time-indicators">
+          <div class="time-item">
+            <span class="time-label">Tiempo transcurrido:</span>
+            <span id="time-elapsed">00:00</span>
+          </div>
+          <div class="time-item">
+            <span class="time-label">Tiempo estimado:</span>
+            <span id="time-estimated">Calculando...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lista de Errores (colapsible) -->
+      <div id="errors-container" class="errors-container hidden">
+        <div class="errors-toggle" onclick="toggleProgressErrors()">
+          <span>⚠️ Ver errores (<span id="errors-count-display">0</span>)</span>
+          <span class="errors-arrow">▼</span>
+        </div>
+        <div id="errors-content" class="errors-content hidden">
+          <!-- Los errores se agregarán aquí dinámicamente -->
+        </div>
+      </div>
+
+      <!-- Controles Adicionales (Pausar/Reanudar) -->
+      <div class="progress-controls-inline">
+        <button id="pause-progress-btn" class="control-btn-inline pause">
+          ⏸️ Pausar
+        </button>
+        <button id="resume-progress-btn" class="control-btn-inline resume hidden">
+          ▶️ Continuar
+        </button>
+      </div>
+    </div>
+
     <div class="search-panel">
       <h3>Búsqueda de Documentos</h3>
       <div class="search-form">
@@ -57,6 +134,10 @@
             <option value="carta">Carta</option>
             <option value="informe">Informe</option>
             <option value="contrato">Contrato</option>
+            <option value="memorando">Memorando</option>
+            <option value="acta">Acta</option>
+            <option value="resolución">Resolución</option>
+            <option value="otro">Otro</option>
           </select>
         </div>
 
