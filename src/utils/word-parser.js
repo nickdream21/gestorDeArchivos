@@ -13,34 +13,34 @@ const TIMEOUT = 10000;
 async function extraerTextoWord(rutaArchivo) {
   try {
     console.log(`Procesando archivo Word: ${rutaArchivo}`);
-    
+
     const extension = path.extname(rutaArchivo).toLowerCase();
     let textoExtraido = '';
     let metadatos = {};
-    
+
     if (extension === '.docx') {
       // Usar mammoth para archivos .docx
       const resultado = await Promise.race([
         mammoth.extractRawText({ path: rutaArchivo }),
-        new Promise((_, reject) => 
+        new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Timeout')), TIMEOUT)
         )
       ]);
-      
+
       textoExtraido = resultado.value || '';
       metadatos = {
         tipo: 'docx',
         longitud: textoExtraido.length,
         warnings: resultado.messages || []
       };
-      
+
     } else if (extension === '.doc') {
       // Usar textract para archivos .doc legacy
       textoExtraido = await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error('Timeout al procesar archivo .doc'));
         }, TIMEOUT);
-        
+
         textract.fromFileWithPath(rutaArchivo, (error, text) => {
           clearTimeout(timeout);
           if (error) {
@@ -50,32 +50,32 @@ async function extraerTextoWord(rutaArchivo) {
           }
         });
       });
-      
+
       metadatos = {
         tipo: 'doc',
         longitud: textoExtraido.length
       };
     }
-    
+
     // Limpiar texto extraído
     textoExtraido = limpiarTexto(textoExtraido);
-    
-    // Intentar detectar asunto automáticamente
-    const asuntoDetectado = detectarAsunto(textoExtraido);
-    
+
+    // Detectar asunto usando NLP
+    const asuntoDetectado = detectingAsuntoNLP(textoExtraido); // Changed name to avoid conflict if any, but I will replace the function definition too.
+
     console.log(`Archivo Word procesado exitosamente: ${rutaArchivo}`);
     console.log(`Texto extraído: ${textoExtraido.length} caracteres`);
-    
+
     return {
       texto: textoExtraido,
       asunto: asuntoDetectado,
       metadatos: metadatos,
       error: null
     };
-    
+
   } catch (error) {
     console.error(`Error al procesar archivo Word ${rutaArchivo}:`, error.message);
-    
+
     return {
       texto: '',
       asunto: '',
@@ -92,7 +92,7 @@ async function extraerTextoWord(rutaArchivo) {
  */
 function limpiarTexto(texto) {
   if (!texto) return '';
-  
+
   return texto
     .replace(/\r\n/g, '\n')           // Normalizar saltos de línea
     .replace(/\n{3,}/g, '\n\n')       // Reducir múltiples saltos de línea
@@ -100,38 +100,46 @@ function limpiarTexto(texto) {
     .trim();                          // Eliminar espacios al inicio y final
 }
 
+const nlp = require('compromise');
+
 /**
- * Intenta detectar automáticamente el asunto del documento
+ * Intenta detectar automáticamente el asunto usando NLP
  * @param {string} texto - Texto del documento
  * @returns {string} - Asunto detectado o cadena vacía
  */
-function detectarAsunto(texto) {
+function detectingAsuntoNLP(texto) {
   if (!texto) return '';
-  
-  // Buscar patrones comunes de asunto
+
+  // 1. Patrones explícitos (Legacy regex priority)
   const patrones = [
     /(?:asunto|subject|tema|ref|referencia):\s*(.+)/i,
-    /(?:^|\n)(.{10,100}?)(?:\n|$)/m, // First substantial line
+    /(?:VISTO|VISTOS):?\s*(.+)/i, // Común en documentos legales/administrativos
+    /(?:SUMILLA):?\s*(.+)/i
   ];
-  
+
   for (const patron of patrones) {
     const match = texto.match(patron);
     if (match && match[1]) {
       let asunto = match[1].trim();
-      
-      // Limpiar el asunto
-      asunto = asunto
-        .replace(/[^\w\s\-\.,]/g, ' ')  // Remover caracteres especiales
-        .replace(/\s+/g, ' ')           // Normalizar espacios
-        .trim();
-      
-      // Verificar que tenga una longitud razonable
-      if (asunto.length >= 10 && asunto.length <= 200) {
-        return asunto;
-      }
+      if (asunto.length > 5 && asunto.length < 300) return asunto;
     }
   }
-  
+
+  // 2. Usar NLP para extraer tópicos si no hay asunto explícito
+  // Analizamos los primeros 2000 caracteres para no ser lentos
+  const doc = nlp(texto.substring(0, 2000));
+
+  // Buscar "Topics" (Entidades importantes)
+  const topics = doc.topics().out('array');
+  if (topics.length > 0) {
+    // Retornamos el tópico más relevante si parece un título
+    return topics[0];
+  }
+
+  // 3. Fallback: Primera línea sustancial
+  const primeraLinea = texto.split('\n').find(l => l.trim().length > 15 && l.trim().length < 150);
+  if (primeraLinea) return primeraLinea.trim();
+
   return '';
 }
 
@@ -149,5 +157,5 @@ module.exports = {
   extraerTextoWord,
   esArchivoWordValido,
   limpiarTexto,
-  detectarAsunto
+  detectarAsunto: detectingAsuntoNLP
 };

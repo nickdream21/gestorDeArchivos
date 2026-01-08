@@ -29,10 +29,14 @@
     "electron-builder": "^24.9.1"
   },
   "dependencies": {
+    "compromise": "^14.14.5",
     "lowdb": "^1.0.0",
     "mammoth": "^1.9.0",
     "pdf-parse": "^1.1.1",
-    "textract": "^2.5.0"
+    "pdfjs-dist": "^5.4.530",
+    "tesseract.js": "^7.0.0",
+    "textract": "^2.5.0",
+    "xlsx": "^0.18.5"
   },
   "build": {
     "appId": "com.sullana.gestor-documentos",

@@ -4,6 +4,7 @@ const fs = require('fs');
 const database = require('./src/db/database');
 const pdfParser = require('./src/utils/pdf-parser');
 const wordParser = require('./src/utils/word-parser');
+const excelParser = require('./src/utils/excel-parser');
 
 const driveApi = require('./src/drive/api');
 
@@ -11,6 +12,11 @@ const driveApi = require('./src/drive/api');
 let indexacionEnProgreso = false;
 let indexacionPausada = false;
 let indexacionCancelada = false;
+
+// Variables para OCR
+let ocrWindow = null;
+const ocrQueue = []; // Cola de promesas { resolve, reject, data }
+let ocrProcessing = false;
 
 // Añadir manejo de errores global
 process.on('uncaughtException', (error) => {
@@ -36,36 +42,108 @@ let mainWindow;
 // Función auxiliar para verificar si un archivo es válido (PDF o Word)
 function esArchivoValido(rutaArchivo) {
   const extension = path.extname(rutaArchivo).toLowerCase();
-  return ['.pdf', '.doc', '.docx'].includes(extension);
+  return ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png'].includes(extension);
 }
 
-// Función auxiliar para procesar un documento (PDF o Word)
+// Función auxiliar para procesar un documento (PDF, Word, Excel, Imagen)
 async function procesarArchivo(rutaArchivo) {
   const extension = path.extname(rutaArchivo).toLowerCase();
-  
+
   try {
     if (extension === '.pdf') {
       console.log(`Procesando PDF: ${rutaArchivo}`);
-      return await pdfParser.extraerTextoPDF(rutaArchivo);
+      const info = await pdfParser.extraerTextoPDF(rutaArchivo);
+
+      // Si el texto es muy corto (probablemente escaneado), intentar OCR
+      if (!info.texto || info.texto.trim().length < 100) {
+        console.log(`Texto PDF insuficiente. Intentando OCR...`);
+        const textoOCR = await processWithOCR(rutaArchivo, 'pdf');
+        if (textoOCR && textoOCR.length > 0) {
+          info.texto = textoOCR;
+          // Re-detectar asunto usando compromise
+          const nlp = require('compromise');
+          const doc = nlp(textoOCR.substring(0, 1000));
+          const topics = doc.topics().out('array');
+          if (topics.length > 0) info.asunto = topics[0];
+          else info.asunto = "Documento Escaneado (OCR)";
+        }
+      }
+      return info;
+
     } else if (['.doc', '.docx'].includes(extension)) {
       console.log(`Procesando Word: ${rutaArchivo}`);
       return await wordParser.extraerTextoWord(rutaArchivo);
+    } else if (['.xls', '.xlsx'].includes(extension)) {
+      console.log(`Procesando Excel: ${rutaArchivo}`);
+      return await excelParser.extraerTextoExcel(rutaArchivo);
+    } else if (['.jpg', '.jpeg', '.png'].includes(extension)) {
+      console.log(`Procesando Imagen: ${rutaArchivo}`);
+      const textoOCR = await processWithOCR(rutaArchivo, extension.substring(1));
+      return {
+        texto: textoOCR || '',
+        asunto: textoOCR ? (textoOCR.substring(0, 50) + '...') : 'Imagen Escaneada',
+        metadatos: { tipo: 'imagen', original: extension }
+      };
     } else {
       throw new Error(`Tipo de archivo no soportado: ${extension}`);
     }
+
   } catch (error) {
     console.error(`Error al procesar archivo ${rutaArchivo}: ${error.message}`);
-    return { 
-      texto: '', 
+    return {
+      texto: '',
       asunto: 'Error al procesar',
       error: error.message
     };
   }
 }
 
+const { exec } = require('child_process');
+
+// Función para procesar OCR con Python
+function processWithOCR(filePath, fileType) {
+  return new Promise((resolve, reject) => {
+    console.log(`Iniciando OCR con Python para: ${filePath}`);
+
+    // Comando para ejecutar el script de Python
+    const pythonScript = path.join(__dirname, 'src', 'ocr', 'ocr_engine.py');
+    const command = `python "${pythonScript}" "${filePath}"`;
+
+    exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error al ejecutar OCR Python: ${error.message}`);
+        console.error(`Stderr: ${stderr}`);
+        resolve(''); // Fallback seguro
+        return;
+      }
+
+      try {
+        // Parsear la salida JSON
+        const result = JSON.parse(stdout);
+
+        if (result.success) {
+          console.log(`OCR Python completado. Longitud: ${result.text.length}`);
+          resolve(result.text);
+        } else {
+          console.error(`Error reportado por OCR Python: ${result.error}`);
+          resolve('');
+        }
+      } catch (parseError) {
+        console.error('Error al parsear salida de Python:', parseError);
+        if (stdout.trim().length > 0) resolve(stdout);
+        else resolve('');
+      }
+    });
+  });
+}
+// Old functions removed
+
+
+
+
 function createWindow() {
   console.log('Creando ventana principal...');
-  
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -80,7 +158,7 @@ function createWindow() {
   // Verificar que el archivo HTML exista
   const htmlPath = path.join(__dirname, 'renderer', 'index.html');
   console.log('Ruta al archivo HTML:', htmlPath);
-  
+
   if (fs.existsSync(htmlPath)) {
     console.log('El archivo HTML existe, cargando...');
     // Cargar la interfaz HTML
@@ -89,7 +167,7 @@ function createWindow() {
     console.error('ERROR: El archivo HTML no existe en la ruta:', htmlPath);
     console.log('Directorio actual:', __dirname);
     console.log('Contenido de la carpeta renderer:');
-    
+
     try {
       const rendererDir = path.join(__dirname, 'renderer');
       if (fs.existsSync(rendererDir)) {
@@ -101,10 +179,10 @@ function createWindow() {
       console.error('Error al listar directorio:', err);
     }
   }
-  
+
   // Abrir DevTools para depuración
   mainWindow.webContents.openDevTools();
-  
+
   // Detectar errores al cargar la página
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
     console.error('Error al cargar la página:', errorCode, errorDescription);
@@ -114,7 +192,7 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('Página cargada correctamente');
   });
-  
+
   // Detectar cuando la ventana se cierre
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -126,14 +204,14 @@ function createWindow() {
 async function verificarDocumentosNuevos() {
   try {
     console.log('Iniciando verificación de documentos nuevos...');
-    
+
     // Obtener lista actual de documentos desde el drive/sistema de archivos
     const documentosActuales = await driveApi.listarTodosLosDocumentos();
     console.log(`Se encontraron ${documentosActuales.length} documentos en total.`);
-    
+
     // Filtrar para encontrar solo documentos nuevos (PDF y Word)
     const documentosNuevos = [];
-    
+
     for (const doc of documentosActuales) {
       try {
         // Verificar si ya existe en la base de datos
@@ -146,14 +224,14 @@ async function verificarDocumentosNuevos() {
         console.error(`Error al verificar si existe el documento ${doc.nombre}:`, error);
       }
     }
-    
+
     // Actualizar la última verificación
     ultimaVerificacion = new Date();
-    
+
     // Si se encontraron documentos nuevos, notificar al frontend
     if (documentosNuevos.length > 0) {
       console.log(`Se encontraron ${documentosNuevos.length} documentos nuevos.`);
-      
+
       // Verificar que mainWindow existe antes de enviar el mensaje
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('documentos-nuevos-detectados', documentosNuevos);
@@ -163,7 +241,7 @@ async function verificarDocumentosNuevos() {
     } else {
       console.log('No se encontraron documentos nuevos.');
     }
-    
+
     return documentosNuevos;
   } catch (error) {
     console.error('Error durante la verificación de documentos nuevos:', error);
@@ -175,21 +253,21 @@ async function verificarDocumentosNuevos() {
 async function procesarDocumentoNuevo(documento, asuntoPersonalizado) {
   try {
     console.log(`Procesando documento nuevo con asunto personalizado: ${documento.nombre}`);
-    
+
     // Extraer texto del documento (PDF o Word)
     let documentoInfo;
     try {
       const infoPromise = procesarArchivo(documento.ruta);
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 15000);
+        setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 120000);
       });
-      
+
       documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
     } catch (docError) {
       console.error(`Error o tiempo límite al procesar documento ${documento.nombre}: ${docError.message}`);
       documentoInfo = { texto: '', asunto: 'Error al procesar' };
     }
-    
+
     // Guardar en la base de datos con el asunto personalizado
     await database.agregarDocumento({
       nombre: documento.nombre,
@@ -199,7 +277,7 @@ async function procesarDocumentoNuevo(documento, asuntoPersonalizado) {
       asunto: asuntoPersonalizado || documentoInfo.asunto || 'Sin asunto',
       contenido: documentoInfo.texto || ''
     });
-    
+
     console.log(`Documento procesado y guardado correctamente: ${documento.nombre}`);
     return { success: true };
   } catch (error) {
@@ -212,23 +290,23 @@ async function procesarDocumentoNuevo(documento, asuntoPersonalizado) {
 async function indexarCarpetaEspecifica(rutaCarpeta) {
   try {
     console.log(`Iniciando indexación de carpeta específica: ${rutaCarpeta}`);
-    
+
     // Verificar que la carpeta existe
     if (!fs.existsSync(rutaCarpeta)) {
       throw new Error('La carpeta especificada no existe');
     }
-    
+
     // Función recursiva para obtener todos los archivos válidos de una carpeta
     function obtenerArchivosValidos(directorio) {
       const archivos = [];
-      
+
       try {
         const elementos = fs.readdirSync(directorio);
-        
+
         for (const elemento of elementos) {
           const rutaCompleta = path.join(directorio, elemento);
           const stats = fs.statSync(rutaCompleta);
-          
+
           if (stats.isDirectory()) {
             // Si es un directorio, procesar recursivamente
             archivos.push(...obtenerArchivosValidos(rutaCompleta));
@@ -236,7 +314,7 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
             // Si es un archivo válido (PDF o Word), agregarlo a la lista
             const extension = path.extname(rutaCompleta).toLowerCase();
             console.log(`Encontrado archivo ${extension.toUpperCase()}: ${elemento}`);
-            
+
             archivos.push({
               nombre: elemento,
               ruta: rutaCompleta,
@@ -249,14 +327,14 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
       } catch (error) {
         console.error(`Error al leer directorio ${directorio}:`, error);
       }
-      
+
       return archivos;
     }
-    
+
     // Función auxiliar para determinar el tipo de documento
     function determinarTipoDocumento(nombre) {
       nombre = nombre.toLowerCase();
-      
+
       if (nombre.includes('carta') || nombre.startsWith('carta')) {
         return 'carta';
       } else if (nombre.includes('informe')) {
@@ -273,15 +351,15 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
         return 'otro';
       }
     }
-    
+
     // Obtener todos los archivos válidos de la carpeta
     const documentos = obtenerArchivosValidos(rutaCarpeta);
     console.log(`Se encontraron ${documentos.length} documentos válidos en la carpeta.`);
-    
+
     let indexados = 0;
     let errores = 0;
     let yaExisten = 0;
-    
+
     // Procesar cada documento
     for (const doc of documentos) {
       try {
@@ -292,15 +370,15 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
           yaExisten++;
           continue;
         }
-        
+
         // Extraer texto y asunto del documento
         console.log(`Procesando documento ${doc.extension.toUpperCase()}: ${doc.nombre}`);
-        
+
         const infoPromise = procesarArchivo(doc.ruta);
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 15000);
+          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 120000);
         });
-        
+
         let documentoInfo;
         try {
           documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
@@ -308,7 +386,7 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
           console.error(`Error o tiempo límite al procesar documento ${doc.nombre}: ${docError.message}`);
           documentoInfo = { texto: '', asunto: 'Error al procesar' };
         }
-        
+
         // Guardar en la base de datos
         await database.agregarDocumento({
           nombre: doc.nombre,
@@ -318,23 +396,23 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
           asunto: documentoInfo.asunto || 'Sin asunto',
           contenido: documentoInfo.texto || ''
         });
-        
+
         indexados++;
-        
+
         // Informar progreso cada 5 documentos
         if (indexados % 5 === 0) {
           console.log(`Progreso: ${indexados} documentos indexados hasta ahora...`);
         }
-        
+
       } catch (docError) {
         console.error(`Error al procesar documento ${doc.nombre}:`, docError);
         errores++;
       }
     }
-      const mensaje = `Indexación de carpeta completada. ${indexados} documentos nuevos indexados. ${yaExisten} ya existían. ${errores} errores.`;
+    const mensaje = `Indexación de carpeta completada. ${indexados} documentos nuevos indexados. ${yaExisten} ya existían. ${errores} errores.`;
     console.log(mensaje);
-    return { 
-      success: true, 
+    return {
+      success: true,
       message: mensaje,
       documentosIndexados: indexados,
       documentosExistentes: yaExisten,
@@ -358,33 +436,33 @@ function formatearTiempo(segundos) {
 async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
   try {
     console.log(`Iniciando indexación con progreso en tiempo real: ${rutaCarpeta}`);
-    
+
     // Inicializar variables de control
     indexacionEnProgreso = true;
     indexacionPausada = false;
     indexacionCancelada = false;
-    
+
     // Verificar que la carpeta existe
     if (!fs.existsSync(rutaCarpeta)) {
       throw new Error('La carpeta especificada no existe');
     }
-    
+
     // Función recursiva para obtener todos los archivos válidos
     function obtenerArchivosValidos(directorio) {
       const archivos = [];
-      
+
       try {
         const elementos = fs.readdirSync(directorio);
-        
+
         for (const elemento of elementos) {
           const rutaCompleta = path.join(directorio, elemento);
           const stats = fs.statSync(rutaCompleta);
-          
+
           if (stats.isDirectory()) {
             archivos.push(...obtenerArchivosValidos(rutaCompleta));
           } else if (stats.isFile() && esArchivoValido(rutaCompleta)) {
             const extension = path.extname(rutaCompleta).toLowerCase();
-            
+
             archivos.push({
               nombre: elemento,
               ruta: rutaCompleta,
@@ -397,13 +475,13 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
       } catch (error) {
         console.error(`Error al leer directorio ${directorio}:`, error);
       }
-      
+
       return archivos;
     }
-    
+
     function determinarTipoDocumento(nombre) {
       nombre = nombre.toLowerCase();
-      
+
       if (nombre.includes('carta') || nombre.startsWith('carta')) {
         return 'carta';
       } else if (nombre.includes('informe')) {
@@ -420,11 +498,11 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
         return 'otro';
       }
     }
-    
+
     // Obtener todos los archivos válidos
     const documentos = obtenerArchivosValidos(rutaCarpeta);
     console.log(`Se encontraron ${documentos.length} documentos válidos.`);
-    
+
     // Enviar información inicial al frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('indexacion-progreso', {
@@ -436,22 +514,22 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
         currentFile: 'Iniciando indexación...'
       });
     }
-    
+
     let indexados = 0;
     let exitosos = 0;
     let errores = 0;
     let yaExisten = 0;
     const tiempoInicio = Date.now();
-    
+
     // Procesar cada documento
     for (let i = 0; i < documentos.length; i++) {
       const doc = documentos[i];
-      
+
       // VERIFICAR CONTROL DE PAUSA
       while (indexacionPausada && !indexacionCancelada) {
         await new Promise(resolve => setTimeout(resolve, 100)); // Esperar 100ms
       }
-      
+
       // VERIFICAR CONTROL DE CANCELACIÓN
       if (indexacionCancelada) {
         console.log('Indexación cancelada por el usuario');
@@ -474,9 +552,9 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
       try {
         // Calcular tiempo transcurrido y estimado
         const tiempoTranscurrido = Math.floor((Date.now() - tiempoInicio) / 1000);
-        const tiempoEstimado = indexados > 0 ? 
+        const tiempoEstimado = indexados > 0 ?
           Math.floor((tiempoTranscurrido / indexados) * (documentos.length - indexados)) : 0;
-        
+
         // Enviar progreso actual al frontend
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('indexacion-progreso', {
@@ -491,7 +569,7 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
             percentage: Math.round((indexados / documentos.length) * 100)
           });
         }
-        
+
         // Verificar si ya existe en la base de datos
         const existe = await database.documentoExiste(doc.ruta);
         if (existe) {
@@ -500,19 +578,19 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
           indexados++;
           continue;
         }
-        
+
         // Procesar el documento
         console.log(`Procesando ${doc.extension.toUpperCase()}: ${doc.nombre}`);
-        
+
         const infoPromise = procesarArchivo(doc.ruta);
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 15000);
+          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 120000);
         });
-        
+
         let documentoInfo;
         try {
           documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
-          
+
           // Guardar en la base de datos
           await database.agregarDocumento({
             nombre: doc.nombre,
@@ -522,13 +600,13 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
             asunto: documentoInfo.asunto || 'Sin asunto',
             contenido: documentoInfo.texto || ''
           });
-          
+
           exitosos++;
-          
+
         } catch (docError) {
           console.error(`Error al procesar ${doc.nombre}: ${docError.message}`);
           errores++;
-          
+
           // Enviar error específico al frontend
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('indexacion-progreso', {
@@ -538,19 +616,19 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
             });
           }
         }
-        
+
         indexados++;
-        
+
       } catch (generalError) {
         console.error(`Error general al procesar ${doc.nombre}:`, generalError);
         errores++;
         indexados++;
       }
     }
-      // Finalizar indexación
+    // Finalizar indexación
     indexacionEnProgreso = false;
     indexacionPausada = false;
-    
+
     // Enviar progreso final solo si no se canceló
     if (!indexacionCancelada) {
       const tiempoTotal = Math.floor((Date.now() - tiempoInicio) / 1000);
@@ -569,30 +647,31 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
         });
       }
     }
-    
-    const mensaje = indexacionCancelada ? 
+
+    const mensaje = indexacionCancelada ?
       `Cancelado: ${exitosos} procesados, ${yaExisten} existían, ${errores} errores` :
       `Completado: ${exitosos} nuevos, ${yaExisten} existían, ${errores} errores`;
     console.log(mensaje);
-    
+
     // Resetear flag de cancelación para próxima ejecución
     indexacionCancelada = false;
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       message: mensaje,
       documentosIndexados: exitosos,
       documentosExistentes: yaExisten,
       errores: errores,
       total: documentos.length
-    };  } catch (error) {
+    };
+  } catch (error) {
     console.error('Error durante la indexación:', error);
-    
+
     // Resetear variables de control en caso de error
     indexacionEnProgreso = false;
     indexacionPausada = false;
     indexacionCancelada = false;
-    
+
     // Enviar error al frontend
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('indexacion-progreso', {
@@ -600,7 +679,7 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
         error: error.message
       });
     }
-    
+
     return { success: false, error: error.message };
   }
 }
@@ -608,8 +687,9 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
 // Iniciar aplicación cuando Electron esté listo
 app.whenReady().then(() => {
   console.log('Electron está listo, creando ventana...');
+
   createWindow();
-  
+
   // Iniciar verificación automática de documentos nuevos
   if (verificacionAutomaticaActiva) {
     timerVerificacion = setInterval(() => {
@@ -619,10 +699,10 @@ app.whenReady().then(() => {
         });
       }
     }, INTERVALO_VERIFICACION);
-    
-    console.log(`Verificación automática iniciada. Intervalo: ${INTERVALO_VERIFICACION/1000} segundos`);
+
+    console.log(`Verificación automática iniciada. Intervalo: ${INTERVALO_VERIFICACION / 1000} segundos`);
   }
-  
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) {
       console.log('Activando aplicación, creando nueva ventana...');
@@ -635,14 +715,14 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', function () {
   console.log('Todas las ventanas cerradas');
-  
+
   // Detener el timer de verificación automática
   if (timerVerificacion) {
     clearInterval(timerVerificacion);
     timerVerificacion = null;
     console.log('Verificación automática detenida.');
   }
-  
+
   if (process.platform !== 'darwin') {
     console.log('Cerrando la aplicación');
     app.quit();
@@ -652,7 +732,7 @@ app.on('window-all-closed', function () {
 // Manejadores IPC existentes
 ipcMain.handle('buscar-documentos', async (event, criterios) => {
   console.log('Búsqueda solicitada con criterios:', criterios);
-  
+
   try {
     // Utilizar la base de datos para buscar documentos
     const resultados = await database.buscarDocumentos(criterios);
@@ -687,14 +767,14 @@ ipcMain.handle('abrir-documento', async (event, ruta) => {
 ipcMain.handle('indexar-carpeta', async (event) => {
   try {
     console.log('Iniciando indexación completa de documentos...');
-    
+
     // Obtener lista de documentos desde el drive/sistema de archivos
     const documentos = await driveApi.listarTodosLosDocumentos();
     console.log(`Se encontraron ${documentos.length} documentos en total.`);
-    
+
     let indexados = 0;
     let errores = 0;
-    
+
     // Procesar cada documento válido
     for (const doc of documentos) {
       try {
@@ -704,18 +784,18 @@ ipcMain.handle('indexar-carpeta', async (event) => {
           console.log(`El documento ya existe en la base de datos: ${doc.nombre}`);
           continue;
         }
-        
+
         // Verificar si es un archivo válido (PDF o Word)
         if (esArchivoValido(doc.ruta)) {
           // Extraer texto y asunto del documento
           console.log(`Procesando documento: ${doc.nombre}`);
-          
+
           // Establecer un tiempo límite para procesar cada documento
           const infoPromise = procesarArchivo(doc.ruta);
           const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 15000);
+            setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 120000);
           });
-          
+
           let documentoInfo;
           try {
             documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
@@ -723,7 +803,7 @@ ipcMain.handle('indexar-carpeta', async (event) => {
             console.error(`Error o tiempo límite al procesar documento ${doc.nombre}: ${docError.message}`);
             documentoInfo = { texto: '', asunto: 'Error al procesar' };
           }
-          
+
           // Guardar en la base de datos
           await database.agregarDocumento({
             nombre: doc.nombre,
@@ -733,9 +813,9 @@ ipcMain.handle('indexar-carpeta', async (event) => {
             asunto: documentoInfo.asunto || 'Sin asunto',
             contenido: documentoInfo.texto || ''
           });
-          
+
           indexados++;
-          
+
           // Informar progreso cada 10 documentos
           if (indexados % 10 === 0) {
             console.log(`Progreso: ${indexados} documentos indexados hasta ahora...`);
@@ -746,7 +826,7 @@ ipcMain.handle('indexar-carpeta', async (event) => {
         errores++;
       }
     }
-    
+
     const mensaje = `Indexación completada. ${indexados} documentos indexados. ${errores} errores.`;
     console.log(mensaje);
     return { success: true, message: mensaje };
@@ -761,24 +841,24 @@ ipcMain.handle('indexar-carpeta', async (event) => {
 ipcMain.handle('seleccionar-carpeta', async (event) => {
   try {
     console.log('Abriendo diálogo de selección de carpeta...');
-    
+
     const resultado = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
       title: 'Seleccionar carpeta para indexar',
       buttonLabel: 'Seleccionar'
     });
-    
+
     if (resultado.canceled) {
       console.log('Selección de carpeta cancelada por el usuario');
       return { success: false, canceled: true };
     }
-    
+
     const rutaSeleccionada = resultado.filePaths[0];
     console.log(`Carpeta seleccionada: ${rutaSeleccionada}`);
-    
-    return { 
-      success: true, 
-      path: rutaSeleccionada 
+
+    return {
+      success: true,
+      path: rutaSeleccionada
     };
   } catch (error) {
     console.error('Error al mostrar diálogo de selección de carpeta:', error);
@@ -807,8 +887,8 @@ ipcMain.handle('verificar-documentos-nuevos', async (event) => {
   try {
     console.log('Verificación manual de documentos nuevos solicitada');
     const documentosNuevos = await verificarDocumentosNuevos();
-    return { 
-      success: true, 
+    return {
+      success: true,
       documentos: documentosNuevos,
       cantidad: documentosNuevos.length
     };
@@ -832,7 +912,7 @@ ipcMain.handle('procesar-documento-nuevo', async (event, { documento, asunto }) 
 ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) => {
   verificacionAutomaticaActiva = false;
   console.log(`Verificación automática ${verificacionAutomaticaActiva ? 'activada' : 'desactivada'}`);
-  
+
   // Si se está activando y no hay timer, iniciarlo
   if (verificacionAutomaticaActiva && !timerVerificacion) {
     timerVerificacion = setInterval(() => {
@@ -843,14 +923,14 @@ ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) =
       }
     }, INTERVALO_VERIFICACION);
     console.log('Timer de verificación iniciado');
-  } 
+  }
   // Si se está desactivando y hay timer, detenerlo
   else if (!verificacionAutomaticaActiva && timerVerificacion) {
     clearInterval(timerVerificacion);
     timerVerificacion = null;
     console.log('Timer de verificación detenido');
   }
-  
+
   return { success: true, activa: verificacionAutomaticaActiva };
 });
 
@@ -859,20 +939,20 @@ ipcMain.handle('actualizar-asunto-documento', async (event, { ruta, nuevoAsunto 
   try {
     console.log(`Solicitud de actualización de asunto para: ${ruta}`);
     console.log(`Nuevo asunto: "${nuevoAsunto}"`);
-    
+
     const resultado = await database.actualizarAsuntoDocumento(ruta, nuevoAsunto);
     console.log('Asunto actualizado correctamente en la base de datos');
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       message: 'Asunto actualizado correctamente',
       cambios: resultado.cambios
     };
   } catch (error) {
     console.error('Error al actualizar asunto del documento:', error);
-    return { 
-      success: false, 
-      error: error.message 
+    return {
+      success: false,
+      error: error.message
     };
   }
 });
