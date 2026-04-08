@@ -1019,3 +1019,49 @@ select:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* ═══════════════ PAGINACIÓN ═══════════════ */
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 12px 0;
+}
+
+.pagination-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border-color, #d1d5db);
+  border-radius: 6px;
+  background: white;
+  color: var(--text-primary, #1f2937);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 36px;
+  text-align: center;
+}
+
+.pagination-btn:hover:not(:disabled):not(.pagination-active) {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-active {
+  background: var(--primary-color, #2563eb);
+  color: white;
+  border-color: var(--primary-color, #2563eb);
+  font-weight: 600;
+}
+
+.pagination-dots {
+  padding: 6px 4px;
+  color: var(--text-secondary, #6b7280);
+  font-size: 13px;
+}

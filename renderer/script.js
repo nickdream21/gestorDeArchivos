@@ -22,8 +22,13 @@ document.addEventListener('DOMContentLoaded', () => {
   let indexacionPausada = false;
   let indexacionCancelada = false;
 
-  // Función para buscar documentos
-  async function buscarDocumentos() {
+  // Estado de paginación
+  let paginaActual = 1;
+  const RESULTADOS_POR_PAGINA = 50;
+  let ultimosCriterios = null; // Para navegar entre páginas sin re-leer campos
+
+  // Función para buscar documentos (con paginación)
+  async function buscarDocumentos(pagina = 1) {
     const keyword = document.getElementById('keyword').value;
     const dateFrom = document.getElementById('dateFrom').value;
     const dateTo = document.getElementById('dateTo').value;
@@ -33,13 +38,17 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsContainer.innerHTML = '';
 
     try {
-      const criterios = { keyword, dateFrom, dateTo, documentType };
-      const resultados = await window.electronAPI.buscarDocumentos(criterios);
+      const criterios = { keyword, dateFrom, dateTo, documentType, page: pagina, pageSize: RESULTADOS_POR_PAGINA };
+      ultimosCriterios = criterios;
+      const respuesta = await window.electronAPI.buscarDocumentos(criterios);
 
-      if (resultados.length === 0) {
+      const { resultados, total, page, totalPages } = respuesta;
+      paginaActual = page;
+
+      if (total === 0) {
         resultsContainer.innerHTML = '<div class="no-results">No se encontraron documentos que coincidan con los criterios de búsqueda.</div>';
       } else {
-        mostrarResultados(resultados);
+        mostrarResultados(resultados, total, page, totalPages);
       }
     } catch (error) {
       resultsContainer.innerHTML = `<div class="error">Error al realizar la búsqueda: ${error.message}</div>`;
@@ -48,8 +57,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Función optimizada para mostrar resultados
-  function mostrarResultados(resultados) {
+  // Función optimizada para mostrar resultados (con paginación)
+  function mostrarResultados(resultados, total, page, totalPages) {
     const tableContainer = document.createElement('div');
     tableContainer.className = 'table-container';
 
@@ -139,7 +148,9 @@ document.addEventListener('DOMContentLoaded', () => {
     tabla.appendChild(tbody);
     tableContainer.appendChild(tabla);
 
-    // Estadísticas
+    // Estadísticas con info de paginación
+    const desde = (page - 1) * RESULTADOS_POR_PAGINA + 1;
+    const hasta = Math.min(page * RESULTADOS_POR_PAGINA, total);
     const statsDiv = document.createElement('div');
     statsDiv.style.cssText = `
       margin-bottom: 16px; 
@@ -153,14 +164,20 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     statsDiv.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span>${resultados.length} documento${resultados.length !== 1 ? 's' : ''} encontrado${resultados.length !== 1 ? 's' : ''}</span>
-        ${resultados.length > 0 ? `<button id="btn-download-all" class="secondary-btn" style="padding: 4px 12px; font-size: 13px;">📥 Descargar Todo (${resultados.length})</button>` : ''}
+        <span>Mostrando ${desde}-${hasta} de ${total} documento${total !== 1 ? 's' : ''}</span>
+        ${resultados.length > 0 ? `<button id="btn-download-all" class="secondary-btn" style="padding: 4px 12px; font-size: 13px;">📥 Descargar Página (${resultados.length})</button>` : ''}
       </div>
     `;
 
     resultsContainer.innerHTML = '';
     resultsContainer.appendChild(statsDiv);
     resultsContainer.appendChild(tableContainer);
+
+    // Controles de paginación
+    if (totalPages > 1) {
+      const paginationDiv = crearControlesPaginacion(page, totalPages);
+      resultsContainer.appendChild(paginationDiv);
+    }
 
     // Eventos para edición de asuntos
     configurarEdicionAsuntos();
@@ -174,6 +191,63 @@ document.addEventListener('DOMContentLoaded', () => {
         await descargarVariosDocumentos(rutas, btnDownloadAll);
       });
     }
+  }
+
+  // Crear controles de paginación
+  function crearControlesPaginacion(page, totalPages) {
+    const div = document.createElement('div');
+    div.className = 'pagination';
+
+    // Botón anterior
+    const btnPrev = document.createElement('button');
+    btnPrev.className = 'pagination-btn';
+    btnPrev.textContent = '← Anterior';
+    btnPrev.disabled = page <= 1;
+    btnPrev.addEventListener('click', () => buscarDocumentos(page - 1));
+    div.appendChild(btnPrev);
+
+    // Números de página (mostrar rango inteligente)
+    const paginas = calcularRangoPaginas(page, totalPages);
+    paginas.forEach(p => {
+      if (p === '...') {
+        const dots = document.createElement('span');
+        dots.className = 'pagination-dots';
+        dots.textContent = '...';
+        div.appendChild(dots);
+      } else {
+        const btn = document.createElement('button');
+        btn.className = 'pagination-btn' + (p === page ? ' pagination-active' : '');
+        btn.textContent = p;
+        btn.addEventListener('click', () => buscarDocumentos(p));
+        div.appendChild(btn);
+      }
+    });
+
+    // Botón siguiente
+    const btnNext = document.createElement('button');
+    btnNext.className = 'pagination-btn';
+    btnNext.textContent = 'Siguiente →';
+    btnNext.disabled = page >= totalPages;
+    btnNext.addEventListener('click', () => buscarDocumentos(page + 1));
+    div.appendChild(btnNext);
+
+    return div;
+  }
+
+  // Calcular qué números de página mostrar
+  function calcularRangoPaginas(page, totalPages) {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages = [];
+    pages.push(1);
+    if (page > 3) pages.push('...');
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) {
+      pages.push(i);
+    }
+    if (page < totalPages - 2) pages.push('...');
+    pages.push(totalPages);
+    return pages;
   }
 
   // Configurar edición inline de asuntos
@@ -515,6 +589,12 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    const filtros = {
+      type: document.getElementById('indexDocumentType').value,
+      dateFrom: document.getElementById('indexDateFrom').value,
+      dateTo: document.getElementById('indexDateTo').value
+    };
+
     // Configurar estado inicial
     indexacionEnProgreso = true;
     indexacionPausada = false;
@@ -666,10 +746,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (indexingMode === 'folder') {
         const rutaSeleccionada = selectedPathInput.value;
-        resultado = await window.electronAPI.indexarCarpetaEspecifica(rutaSeleccionada);
+        resultado = await window.electronAPI.indexarCarpetaEspecifica(rutaSeleccionada, filtros);
       } else {
         // Modo archivos
-        resultado = await window.electronAPI.indexarArchivosSeleccionados(selectedFilesList);
+        resultado = await window.electronAPI.indexarArchivosSeleccionados(selectedFilesList, filtros);
       }
 
       if (!resultado.success) {

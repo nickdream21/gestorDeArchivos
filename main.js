@@ -781,13 +781,13 @@ ipcMain.handle('buscar-documentos', async (event, criterios) => {
   console.log('Búsqueda solicitada con criterios:', criterios);
 
   try {
-    // Utilizar la base de datos para buscar documentos
-    const resultados = await database.buscarDocumentos(criterios);
-    console.log(`Se encontraron ${resultados.length} resultados en la base de datos.`);
-    return resultados;
+    // Utilizar la base de datos para buscar documentos (con paginación)
+    const resultado = await database.buscarDocumentos(criterios);
+    console.log(`Se encontraron ${resultado.total} resultados (página ${resultado.page}/${resultado.totalPages}).`);
+    return resultado;
   } catch (error) {
     console.error('Error durante la búsqueda:', error);
-    return [];
+    return { resultados: [], total: 0, page: 1, pageSize: 50, totalPages: 0 };
   }
 });
 

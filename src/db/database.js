@@ -223,6 +223,7 @@ module.exports = {
   },
 
   // Buscar documentos según criterios (usa FTS4 para búsqueda de texto)
+  // Soporta paginación: criterios.page (1-based), criterios.pageSize (default 50)
   buscarDocumentos: (criterios) => {
     return new Promise((resolve, reject) => {
       try {
@@ -262,7 +263,23 @@ module.exports = {
           params.push(criterios.documentType);
         }
 
+        // Contar total de resultados (para paginación)
+        const countSql = sql.replace(/^SELECT d\.\*|^SELECT \*/, 'SELECT COUNT(*) as total');
+        const countStmt = db.prepare(countSql);
+        if (params.length > 0) countStmt.bind(params);
+        countStmt.step();
+        const total = countStmt.getAsObject().total;
+        countStmt.free();
+
+        // Añadir ordenación y paginación
         sql += ' ORDER BY d.fecha_indexacion DESC';
+
+        const page = Math.max(1, parseInt(criterios.page) || 1);
+        const pageSize = Math.max(1, Math.min(200, parseInt(criterios.pageSize) || 50));
+        const offset = (page - 1) * pageSize;
+
+        sql += ' LIMIT ? OFFSET ?';
+        params.push(pageSize, offset);
 
         // Ejecutar con prepared statement
         const stmt = db.prepare(sql);
@@ -274,10 +291,16 @@ module.exports = {
         }
         stmt.free();
 
-        resolve(resultados);
+        resolve({
+          resultados,
+          total,
+          page,
+          pageSize,
+          totalPages: Math.ceil(total / pageSize)
+        });
       } catch (err) {
         console.error('Error en búsqueda:', err);
-        resolve([]);
+        resolve({ resultados: [], total: 0, page: 1, pageSize: 50, totalPages: 0 });
       }
     });
   },
