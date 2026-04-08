@@ -776,13 +776,32 @@ function esRutaSegura(ruta) {
   return extensionesPermitidas.includes(ext);
 }
 
+// Validar que un string sea seguro para usar como texto (sin longitud excesiva)
+function esTextoSeguro(texto, maxLen = 500) {
+  return typeof texto === 'string' && texto.length <= maxLen;
+}
+
+// Validar objeto de criterios de búsqueda
+function validarCriterios(criterios) {
+  if (!criterios || typeof criterios !== 'object') return {};
+  return {
+    keyword: esTextoSeguro(criterios.keyword, 200) ? criterios.keyword : '',
+    dateFrom: typeof criterios.dateFrom === 'string' ? criterios.dateFrom.slice(0, 10) : '',
+    dateTo: typeof criterios.dateTo === 'string' ? criterios.dateTo.slice(0, 10) : '',
+    documentType: typeof criterios.documentType === 'string' ? criterios.documentType.slice(0, 50) : '',
+    page: parseInt(criterios.page) || 1,
+    pageSize: parseInt(criterios.pageSize) || 50
+  };
+}
+
 // Manejadores IPC existentes
 ipcMain.handle('buscar-documentos', async (event, criterios) => {
-  console.log('Búsqueda solicitada con criterios:', criterios);
+  const criteriosValidados = validarCriterios(criterios);
+  console.log('Búsqueda solicitada con criterios:', criteriosValidados);
 
   try {
     // Utilizar la base de datos para buscar documentos (con paginación)
-    const resultado = await database.buscarDocumentos(criterios);
+    const resultado = await database.buscarDocumentos(criteriosValidados);
     console.log(`Se encontraron ${resultado.total} resultados (página ${resultado.page}/${resultado.totalPages}).`);
     return resultado;
   } catch (error) {
@@ -920,6 +939,9 @@ ipcMain.handle('seleccionar-carpeta', async (event) => {
 
 ipcMain.handle('indexar-carpeta-especifica', async (event, { rutaCarpeta, filtros }) => {
   try {
+    if (!rutaCarpeta || typeof rutaCarpeta !== 'string') {
+      return { success: false, error: 'Ruta de carpeta inválida' };
+    }
     console.log(`Solicitud de indexación de carpeta específica: ${rutaCarpeta}`);
     const resultado = await indexarCarpetaEspecificaConProgreso(rutaCarpeta, filtros);
     return resultado;
@@ -952,6 +974,12 @@ ipcMain.handle('verificar-documentos-nuevos', async (event) => {
 
 ipcMain.handle('procesar-documento-nuevo', async (event, { documento, asunto }) => {
   try {
+    if (!documento || !documento.ruta || !documento.nombre) {
+      return { success: false, error: 'Datos del documento inválidos' };
+    }
+    if (asunto && !esTextoSeguro(asunto, 500)) {
+      return { success: false, error: 'Asunto demasiado largo (máx 500 caracteres)' };
+    }
     console.log(`Procesando documento nuevo: ${documento.nombre} con asunto: "${asunto}"`);
     const resultado = await procesarDocumentoNuevo(documento, asunto);
     return { ...resultado, documento };
@@ -962,7 +990,7 @@ ipcMain.handle('procesar-documento-nuevo', async (event, { documento, asunto }) 
 });
 
 ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) => {
-  verificacionAutomaticaActiva = activa;
+  verificacionAutomaticaActiva = !!activa; // Forzar booleano
   console.log(`Verificación automática ${verificacionAutomaticaActiva ? 'activada' : 'desactivada'}`);
 
   // Si se está activando y no hay timer, iniciarlo
@@ -989,10 +1017,15 @@ ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) =
 // NUEVO MANEJADOR IPC PARA ACTUALIZAR ASUNTO
 ipcMain.handle('actualizar-asunto-documento', async (event, { ruta, nuevoAsunto }) => {
   try {
+    if (!ruta || typeof ruta !== 'string') {
+      return { success: false, error: 'Ruta inválida' };
+    }
+    if (!esTextoSeguro(nuevoAsunto, 500)) {
+      return { success: false, error: 'Asunto inválido o demasiado largo (máx 500 caracteres)' };
+    }
     console.log(`Solicitud de actualización de asunto para: ${ruta}`);
-    console.log(`Nuevo asunto: "${nuevoAsunto}"`);
 
-    const resultado = await database.actualizarAsuntoDocumento(ruta, nuevoAsunto);
+    const resultado = await database.actualizarAsuntoDocumento(ruta, nuevoAsunto.trim());
     console.log('Asunto actualizado correctamente en la base de datos');
 
     return {
@@ -1086,10 +1119,15 @@ ipcMain.handle('seleccionar-archivos', async (event) => {
 
 ipcMain.handle('indexar-archivos-seleccionados', async (event, { archivos: archivosPaths, filtros }) => {
   try {
-    console.log(`Solicitud de indexación de ${archivosPaths.length} archivos específicos`);
+    if (!Array.isArray(archivosPaths)) {
+      return { success: false, error: 'Datos inválidos' };
+    }
+    // Filtrar solo archivos con extensión permitida
+    const archivosSeguras = archivosPaths.filter(r => esRutaSegura(r));
+    console.log(`Solicitud de indexación de ${archivosSeguras.length} archivos válidos (de ${archivosPaths.length})`);
 
     // Mapear paths a objetos de documento
-    const documentos = archivosPaths.map(rutaCompleta => {
+    const documentos = archivosSeguras.map(rutaCompleta => {
       // Verificar si existe antes de procesar
       if (!fs.existsSync(rutaCompleta)) return null;
 
@@ -1135,6 +1173,10 @@ ipcMain.handle('indexar-archivos-seleccionados', async (event, { archivos: archi
 // Manejador para abrir archivo en carpeta
 ipcMain.handle('abrir-en-carpeta', async (event, ruta) => {
   try {
+    if (!esRutaSegura(ruta)) {
+      console.error('Ruta no permitida para abrir en carpeta:', ruta);
+      return { success: false, error: 'Tipo de archivo no permitido' };
+    }
     console.log(`Abriendo en carpeta: ${ruta}`);
     if (!fs.existsSync(ruta)) {
       return { success: false, error: 'El archivo no existe' };
@@ -1150,6 +1192,9 @@ ipcMain.handle('abrir-en-carpeta', async (event, ruta) => {
 // NUEVOS MANEJADORES PARA DESCARGA DE DOCUMENTOS
 ipcMain.handle('descargar-documento', async (event, rutaOrigen) => {
   try {
+    if (!esRutaSegura(rutaOrigen)) {
+      return { success: false, error: 'Tipo de archivo no permitido' };
+    }
     console.log(`Solicitud de descarga para: ${rutaOrigen}`);
 
     if (!fs.existsSync(rutaOrigen)) {
@@ -1183,10 +1228,12 @@ ipcMain.handle('descargar-documento', async (event, rutaOrigen) => {
 
 ipcMain.handle('descargar-varios-documentos', async (event, rutas) => {
   try {
-    console.log(`Solicitud de descarga masiva para ${rutas.length} documentos`);
-
-    // Validar que hay archivos
-    const archivosValidos = rutas.filter(r => fs.existsSync(r));
+    if (!Array.isArray(rutas)) {
+      return { success: false, error: 'Datos inválidos' };
+    }
+    // Filtrar solo rutas seguras y existentes
+    const archivosValidos = rutas.filter(r => esRutaSegura(r) && fs.existsSync(r));
+    console.log(`Solicitud de descarga masiva: ${archivosValidos.length} de ${rutas.length} archivos válidos`);
     if (archivosValidos.length === 0) {
       return { success: false, error: 'Ninguno de los archivos seleccionados existe' };
     }
