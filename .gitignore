@@ -5,6 +5,14 @@ npm-debug.log*
 # Build outputs
 dist/
 build/
+portable-build/
+ocr_engine_build/
+
+# Portable zip builds
+*.zip
+
+# Data directory
+data/
 
 # Environment variables
 .env

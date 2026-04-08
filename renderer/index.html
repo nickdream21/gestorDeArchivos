@@ -17,16 +17,26 @@
     <div class="indexing-panel">
       <h3>Configuración de Indexación</h3>
       <div class="indexing-form">
+        <div class="selection-mode-group">
+          <label class="radio-label">
+            <input type="radio" name="indexingMode" value="folder" checked> Carpeta Completa
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="indexingMode" value="files"> Archivos Específicos
+          </label>
+        </div>
+
         <div class="form-group">
-          <label for="folderPath">Ruta a indexar:</label>
+          <label id="pathLabel" for="selectedPath">Ruta a indexar:</label>
           <div class="path-input-group">
-            <input type="text" id="folderPath" placeholder="Seleccione una carpeta..." readonly>
-            <button id="browseFolderBtn" class="secondary-btn">Examinar</button>
+            <input type="text" id="selectedPath" placeholder="Seleccione una carpeta..." readonly>
+            <button id="browseFolderBtn" class="secondary-btn">Examinar Carpeta</button>
+            <button id="browseFilesBtn" class="secondary-btn hidden">Examinar Archivos</button>
           </div>
         </div>
 
         <div class="form-group">
-          <button id="indexFolderBtn" class="primary-btn" disabled>Indexar Ruta</button>
+          <button id="indexBtn" class="primary-btn" disabled>Indexar</button>
           <span id="indexingStatus" class="status-text hidden"></span>
         </div>
       </div>
@@ -38,7 +48,7 @@
       <div class="progress-header-inline">
         <h3>🗂️ Indexando Documentos</h3>
         <button id="cancel-progress-btn" class="cancel-progress-btn">Cancelar</button>
-      </div>      <!-- Barra de Progreso Principal -->
+      </div> <!-- Barra de Progreso Principal -->
       <div class="main-progress-bar">
         <div id="main-progress-fill" class="main-progress-fill"></div>
         <div class="progress-text">
@@ -58,7 +68,11 @@
         </div>
         <div class="counter-item success">
           <div class="counter-number" id="counter-success">0</div>
-          <div class="counter-label">EXITOSOS</div>
+          <div class="counter-label">NUEVOS</div>
+        </div>
+        <div class="counter-item existing">
+          <div class="counter-number" id="counter-existing">0</div>
+          <div class="counter-label">YA EXISTÍAN</div>
         </div>
         <div class="counter-item error">
           <div class="counter-number" id="counter-errors">0</div>

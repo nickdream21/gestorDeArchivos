@@ -4,32 +4,38 @@ document.addEventListener('DOMContentLoaded', () => {
   const resetBtn = document.getElementById('resetBtn');
   const resultsContainer = document.getElementById('results-container');
   const loadingIndicator = document.getElementById('loading');
-  
+
   // Referencias para indexación de rutas
-  const folderPathInput = document.getElementById('folderPath');
+  const selectedPathInput = document.getElementById('selectedPath');
   const browseFolderBtn = document.getElementById('browseFolderBtn');
-  const indexFolderBtn = document.getElementById('indexFolderBtn');
+  const browseFilesBtn = document.getElementById('browseFilesBtn');
+  const indexBtn = document.getElementById('indexBtn');
   const indexingStatus = document.getElementById('indexingStatus');
+  const radioButtons = document.querySelectorAll('input[name="indexingMode"]');
+
+  // Estado de selección
+  let selectedFilesList = [];
+  let indexingMode = 'folder'; // 'folder' | 'files'
 
   // Variables para control de progreso
   let indexacionEnProgreso = false;
   let indexacionPausada = false;
   let indexacionCancelada = false;
-  
+
   // Función para buscar documentos
   async function buscarDocumentos() {
     const keyword = document.getElementById('keyword').value;
     const dateFrom = document.getElementById('dateFrom').value;
     const dateTo = document.getElementById('dateTo').value;
     const documentType = document.getElementById('documentType').value;
-    
+
     loadingIndicator.classList.remove('hidden');
     resultsContainer.innerHTML = '';
-    
+
     try {
       const criterios = { keyword, dateFrom, dateTo, documentType };
       const resultados = await window.electronAPI.buscarDocumentos(criterios);
-      
+
       if (resultados.length === 0) {
         resultsContainer.innerHTML = '<div class="no-results">No se encontraron documentos que coincidan con los criterios de búsqueda.</div>';
       } else {
@@ -41,15 +47,15 @@ document.addEventListener('DOMContentLoaded', () => {
       loadingIndicator.classList.add('hidden');
     }
   }
-  
+
   // Función optimizada para mostrar resultados
   function mostrarResultados(resultados) {
     const tableContainer = document.createElement('div');
     tableContainer.className = 'table-container';
-    
+
     const tabla = document.createElement('table');
     tabla.className = 'results-table';
-    
+
     // Crear encabezado
     const thead = document.createElement('thead');
     thead.innerHTML = `
@@ -62,13 +68,13 @@ document.addEventListener('DOMContentLoaded', () => {
       </tr>
     `;
     tabla.appendChild(thead);
-    
+
     // Crear cuerpo de la tabla
     const tbody = document.createElement('tbody');
-    
+
     resultados.forEach(doc => {
       const tr = document.createElement('tr');
-      
+
       // Funciones auxiliares
       function escapeHtml(unsafe) {
         if (!unsafe) return '';
@@ -79,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#039;");
       }
-      
+
       function formatearFecha(fecha) {
         if (!fecha) return 'N/A';
         try {
@@ -99,7 +105,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return fecha || 'N/A';
         }
       }
-      
+
       // Estructura de la fila con edición inline
       tr.innerHTML = `
         <td title="${escapeHtml(doc.nombre)}">${escapeHtml(doc.nombre)}</td>
@@ -121,16 +127,18 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>
           <div class="action-buttons">
             <button class="btn-open" data-path="${escapeHtml(doc.ruta)}" title="Abrir documento">Abrir</button>
+            <button class="btn-open-folder" data-path="${escapeHtml(doc.ruta)}" title="Abrir en carpeta">📂</button>
             <button class="btn-copy" data-path="${escapeHtml(doc.ruta)}" title="Copiar ruta">Copiar</button>
+            <button class="btn-download" data-path="${escapeHtml(doc.ruta)}" title="Descargar documento">📥</button>
           </div>
         </td>
       `;
       tbody.appendChild(tr);
     });
-    
+
     tabla.appendChild(tbody);
     tableContainer.appendChild(tabla);
-    
+
     // Estadísticas
     const statsDiv = document.createElement('div');
     statsDiv.style.cssText = `
@@ -143,17 +151,31 @@ document.addEventListener('DOMContentLoaded', () => {
       font-weight: 500;
       font-size: 14px;
     `;
-    statsDiv.innerHTML = `${resultados.length} documento${resultados.length !== 1 ? 's' : ''} encontrado${resultados.length !== 1 ? 's' : ''}`;
-    
+    statsDiv.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span>${resultados.length} documento${resultados.length !== 1 ? 's' : ''} encontrado${resultados.length !== 1 ? 's' : ''}</span>
+        ${resultados.length > 0 ? `<button id="btn-download-all" class="secondary-btn" style="padding: 4px 12px; font-size: 13px;">📥 Descargar Todo (${resultados.length})</button>` : ''}
+      </div>
+    `;
+
     resultsContainer.innerHTML = '';
     resultsContainer.appendChild(statsDiv);
     resultsContainer.appendChild(tableContainer);
-    
+
     // Eventos para edición de asuntos
     configurarEdicionAsuntos();
     configurarAccionesDocumentos();
+
+    // Evento para descargar todo
+    const btnDownloadAll = document.getElementById('btn-download-all');
+    if (btnDownloadAll) {
+      btnDownloadAll.addEventListener('click', async () => {
+        const rutas = resultados.map(r => r.ruta);
+        await descargarVariosDocumentos(rutas, btnDownloadAll);
+      });
+    }
   }
-  
+
   // Configurar edición inline de asuntos
   function configurarEdicionAsuntos() {
     // Botones de editar
@@ -164,14 +186,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const displayDiv = cell.querySelector('.asunto-display');
         const editDiv = cell.querySelector('.asunto-edit');
         const input = cell.querySelector('.asunto-input');
-        
+
         displayDiv.style.display = 'none';
         editDiv.style.display = 'flex';
         input.focus();
         input.select();
       });
     });
-    
+
     // Botones de guardar
     document.querySelectorAll('.btn-save-asunto').forEach(btn => {
       btn.addEventListener('click', async (e) => {
@@ -179,7 +201,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await guardarAsunto(btn);
       });
     });
-    
+
     // Botones de cancelar
     document.querySelectorAll('.btn-cancel-asunto').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -187,7 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cancelarEdicion(btn);
       });
     });
-    
+
     // Atajos de teclado
     document.querySelectorAll('.asunto-input').forEach(input => {
       input.addEventListener('keydown', (e) => {
@@ -203,38 +225,38 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
-  
+
   // Guardar asunto editado
   async function guardarAsunto(btn) {
     const cell = btn.closest('.asunto-cell');
     const ruta = cell.dataset.ruta;
     const input = cell.querySelector('.asunto-input');
     const nuevoAsunto = input.value.trim();
-    
+
     if (nuevoAsunto === '') {
       mostrarNotificacion('El asunto no puede estar vacío', 'error');
       return;
     }
-    
+
     btn.disabled = true;
     const textoOriginal = btn.innerHTML;
     btn.innerHTML = '⏳';
-    
+
     try {
       const resultado = await window.electronAPI.actualizarAsuntoDocumento(ruta, nuevoAsunto);
-      
+
       if (resultado.success) {
         // Actualizar vista
         const asuntoText = cell.querySelector('.asunto-text');
         asuntoText.textContent = nuevoAsunto;
         asuntoText.title = nuevoAsunto;
-        
+
         // Volver a modo vista
         const displayDiv = cell.querySelector('.asunto-display');
         const editDiv = cell.querySelector('.asunto-edit');
         editDiv.style.display = 'none';
         displayDiv.style.display = 'flex';
-        
+
         mostrarNotificacion('Asunto actualizado correctamente', 'success');
       } else {
         mostrarNotificacion(`Error: ${resultado.error}`, 'error');
@@ -246,7 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.innerHTML = textoOriginal;
     }
   }
-  
+
   // Cancelar edición
   function cancelarEdicion(btn) {
     const cell = btn.closest('.asunto-cell');
@@ -254,12 +276,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const editDiv = cell.querySelector('.asunto-edit');
     const input = cell.querySelector('.asunto-input');
     const originalValue = cell.querySelector('.asunto-text').textContent;
-    
+
     input.value = originalValue;
     editDiv.style.display = 'none';
     displayDiv.style.display = 'flex';
   }
-  
+
   // Configurar acciones de documentos
   function configurarAccionesDocumentos() {
     // Botones de abrir
@@ -268,7 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const originalText = btn.innerHTML;
         btn.innerHTML = '⏳';
         btn.disabled = true;
-        
+
         try {
           const resultado = await window.electronAPI.abrirDocumento(btn.dataset.path);
           if (!resultado.success) {
@@ -290,7 +312,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
     });
-    
+
+    // Botones de abrir en carpeta
+    document.querySelectorAll('.btn-open-folder').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '⏳';
+        btn.disabled = true;
+
+        try {
+          const resultado = await window.electronAPI.abrirEnCarpeta(btn.dataset.path);
+          if (!resultado.success) {
+            mostrarNotificacion(`Error al abrir carpeta: ${resultado.error}`, 'error');
+          } else {
+            // No necesitamos feedback visual largo porque la carpeta se abrirá encima
+            btn.innerHTML = '✓';
+            setTimeout(() => {
+              btn.innerHTML = originalText;
+              btn.disabled = false;
+            }, 1000);
+          }
+        } catch (error) {
+          mostrarNotificacion(`Error: ${error.message}`, 'error');
+          btn.innerHTML = '❌';
+          setTimeout(() => {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+          }, 2000);
+        }
+      });
+    });
+
     // Botones de copiar
     document.querySelectorAll('.btn-copy').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -307,39 +359,144 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
     });
+
+    // Botones de descargar individual
+    document.querySelectorAll('.btn-download').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '⏳';
+        btn.disabled = true;
+
+        try {
+          const resultado = await window.electronAPI.descargarDocumento(btn.dataset.path);
+
+          if (resultado.success) {
+            mostrarNotificacion(`Documento guardado en: ${resultado.path}`, 'success');
+            btn.innerHTML = '✓';
+          } else if (resultado.canceled) {
+            btn.innerHTML = originalText; // Restaurar si cancela
+          } else {
+            mostrarNotificacion(`Error: ${resultado.error}`, 'error');
+            btn.innerHTML = '❌';
+          }
+        } catch (error) {
+          mostrarNotificacion(`Error: ${error.message}`, 'error');
+          btn.innerHTML = '❌';
+        } finally {
+          if (btn.innerHTML !== originalText && btn.innerHTML !== '⏳') {
+            setTimeout(() => {
+              btn.innerHTML = originalText;
+              btn.disabled = false;
+            }, 2000);
+          } else if (btn.innerHTML === '⏳') {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+          }
+        }
+      });
+    });
   }
-  
+
+  // Nueva función para descargar varios documentos
+  async function descargarVariosDocumentos(rutas, btn) {
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ Preparando descarga...';
+    btn.disabled = true;
+
+    try {
+      const resultado = await window.electronAPI.descargarVariosDocumentos(rutas);
+
+      if (resultado.success) {
+        mostrarNotificacion(`Descarga completada. ${resultado.exitosos} archivos guardados en ${resultado.carpeta}`, 'success');
+        if (resultado.errores > 0) {
+          mostrarNotificacion(`Hubo ${resultado.errores} errores durante la descarga.`, 'warning');
+        }
+      } else if (resultado.canceled) {
+        mostrarNotificacion('Descarga cancelada', 'info');
+      } else {
+        mostrarNotificacion(`Error: ${resultado.error}`, 'error');
+      }
+    } catch (error) {
+      mostrarNotificacion(`Error grave: ${error.message}`, 'error');
+    } finally {
+      btn.innerHTML = originalText;
+      btn.disabled = false;
+    }
+  }
+
   // Mostrar notificaciones
   function mostrarNotificacion(mensaje, tipo = 'info') {
     const notificacion = document.createElement('div');
     notificacion.className = 'notification';
-    
+
     const colores = {
       success: '#10b981',
       error: '#ef4444',
       info: '#3b82f6'
     };
-    
+
     notificacion.style.background = colores[tipo] || colores.info;
     notificacion.textContent = mensaje;
-    
+
     document.body.appendChild(notificacion);
-    
+
     setTimeout(() => {
       if (notificacion.parentNode) {
         notificacion.parentNode.removeChild(notificacion);
       }
     }, 3000);
   }
-  
+
   // Funciones de indexación
+
+  // Cambiar modo de selección
+  radioButtons.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      indexingMode = e.target.value;
+      resetSelection();
+
+      if (indexingMode === 'folder') {
+        browseFolderBtn.classList.remove('hidden');
+        browseFilesBtn.classList.add('hidden');
+        document.getElementById('pathLabel').textContent = 'Ruta a indexar:';
+        selectedPathInput.placeholder = 'Seleccione una carpeta...';
+      } else {
+        browseFolderBtn.classList.add('hidden');
+        browseFilesBtn.classList.remove('hidden');
+        document.getElementById('pathLabel').textContent = 'Archivos seleccionados:';
+        selectedPathInput.placeholder = 'Seleccione archivos...';
+      }
+    });
+  });
+
+  function resetSelection() {
+    selectedPathInput.value = '';
+    selectedFilesList = [];
+    indexBtn.disabled = true;
+    indexingStatus.classList.add('hidden');
+  }
+
   async function examinarCarpeta() {
     try {
       const resultado = await window.electronAPI.seleccionarCarpeta();
       if (resultado.success && resultado.path) {
-        folderPathInput.value = resultado.path;
-        indexFolderBtn.disabled = false;
+        selectedPathInput.value = resultado.path;
+        indexBtn.disabled = false;
         actualizarEstadoIndexacion('Carpeta seleccionada', 'success');
+      }
+    } catch (error) {
+      actualizarEstadoIndexacion(`Error: ${error.message}`, 'error');
+    }
+  }
+
+  async function examinarArchivos() {
+    try {
+      const resultado = await window.electronAPI.seleccionarArchivos();
+      if (resultado.success && resultado.files && resultado.files.length > 0) {
+        selectedFilesList = resultado.files;
+        selectedPathInput.value = `${selectedFilesList.length} archivo(s) seleccionado(s)`;
+        indexBtn.disabled = false;
+        actualizarEstadoIndexacion(`${selectedFilesList.length} archivos seleccionados`, 'success');
       }
     } catch (error) {
       actualizarEstadoIndexacion(`Error: ${error.message}`, 'error');
@@ -347,10 +504,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // FUNCIÓN DE INDEXACIÓN ACTUALIZADA PARA SECCIÓN INTEGRADA
   async function indexarRutaEspecifica() {
-    const rutaSeleccionada = folderPathInput.value;
-    
-    if (!rutaSeleccionada) {
+
+    if (indexingMode === 'folder' && !selectedPathInput.value) {
       actualizarEstadoIndexacion('Seleccione una carpeta primero', 'error');
+      return;
+    }
+
+    if (indexingMode === 'files' && selectedFilesList.length === 0) {
+      actualizarEstadoIndexacion('Seleccione archivos primero', 'error');
       return;
     }
 
@@ -358,15 +519,15 @@ document.addEventListener('DOMContentLoaded', () => {
     indexacionEnProgreso = true;
     indexacionPausada = false;
     indexacionCancelada = false;
-    
+
     // Mostrar sección de progreso integrada
     resetProgressSection();
     showProgressSection();
-    
+
     // Desactivar botón de indexar
-    indexFolderBtn.disabled = true;
-    const textoOriginal = indexFolderBtn.innerHTML;
-    indexFolderBtn.innerHTML = 'Indexando...';
+    indexBtn.disabled = true;
+    const textoOriginal = indexBtn.innerHTML;
+    indexBtn.innerHTML = 'Indexando...';
     actualizarEstadoIndexacion('Iniciando indexación...', 'loading');
 
     // Configurar listener para progreso en tiempo real
@@ -378,6 +539,7 @@ document.addEventListener('DOMContentLoaded', () => {
             processed: data.processed,
             success: data.success,
             errors: data.errors,
+            existing: data.existing || 0,
             currentFile: data.currentFile,
             elapsedTime: '00:00',
             estimatedTime: 'Calculando...'
@@ -390,9 +552,19 @@ document.addEventListener('DOMContentLoaded', () => {
             processed: data.processed,
             success: data.success,
             errors: data.errors,
+            existing: data.existing || 0,
             currentFile: data.currentFile,
             elapsedTime: data.elapsedTime,
             estimatedTime: data.estimatedTime
+          });
+          break;
+
+        case 'existente':
+          // Un archivo ya existía - actualizar contadores
+          updateProgressSection({
+            existing: data.existing,
+            processed: data.processed,
+            currentFile: `⏭️ ${data.archivo} (ya indexado)`
           });
           break;
 
@@ -406,6 +578,7 @@ document.addEventListener('DOMContentLoaded', () => {
             processed: data.processed,
             success: data.success,
             errors: data.errors,
+            existing: data.existing,
             currentFile: data.currentFile,
             elapsedTime: data.elapsedTime,
             estimatedTime: data.estimatedTime
@@ -425,7 +598,39 @@ document.addEventListener('DOMContentLoaded', () => {
           const mensaje = `Completado: ${data.success} nuevos, ${data.existing} existían, ${data.errors} errores`;
           actualizarEstadoIndexacion(mensaje, 'success');
           mostrarNotificacion(mensaje, 'success');
-          break;        case 'error-general':
+          break;
+
+        case 'todos-existentes':
+          // Caso especial: todos los archivos ya estaban indexados
+          updateProgressSection({
+            total: data.total,
+            processed: data.processed,
+            success: 0,
+            errors: 0,
+            existing: data.existing,
+            currentFile: '✅ ' + data.currentFile,
+            elapsedTime: data.elapsedTime,
+            estimatedTime: 'Finalizado'
+          });
+
+          markProgressCompleted();
+
+          const mensajeExistentes = `Todos los ${data.existing} archivos ya estaban indexados`;
+          actualizarEstadoIndexacion(mensajeExistentes, 'info');
+          mostrarNotificacion(mensajeExistentes, 'info');
+
+          setTimeout(() => {
+            hideProgressSection();
+          }, 4000);
+          break;
+
+        case 'sin-documentos':
+          actualizarEstadoIndexacion('No se encontraron documentos válidos', 'error');
+          mostrarNotificacion('No se encontraron documentos válidos para indexar', 'error');
+          hideProgressSection();
+          break;
+
+        case 'error-general':
           actualizarEstadoIndexacion(`Error: ${data.error}`, 'error');
           mostrarNotificacion(`Error: ${data.error}`, 'error');
           hideProgressSection();
@@ -447,18 +652,26 @@ document.addEventListener('DOMContentLoaded', () => {
           const mensajeCancelado = `Cancelado: ${data.success} procesados, ${data.existing} existían, ${data.errors} errores`;
           actualizarEstadoIndexacion(mensajeCancelado, 'info');
           mostrarNotificacion(mensajeCancelado, 'info');
-          
+
           setTimeout(() => {
             hideProgressSection();
           }, 3000);
           break;
       }
     });
-    
+
     try {
-      // Ejecutar indexación (ahora con progreso en tiempo real)
-      const resultado = await window.electronAPI.indexarCarpetaEspecifica(rutaSeleccionada);
-      
+      // Ejecutar indexación según el modo
+      let resultado;
+
+      if (indexingMode === 'folder') {
+        const rutaSeleccionada = selectedPathInput.value;
+        resultado = await window.electronAPI.indexarCarpetaEspecifica(rutaSeleccionada);
+      } else {
+        // Modo archivos
+        resultado = await window.electronAPI.indexarArchivosSeleccionados(selectedFilesList);
+      }
+
       if (!resultado.success) {
         actualizarEstadoIndexacion(`Error: ${resultado.error}`, 'error');
         mostrarNotificacion(`Error: ${resultado.error}`, 'error');
@@ -472,8 +685,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Limpiar listener
       removerListener();
       indexacionEnProgreso = false;
-      indexFolderBtn.disabled = false;
-      indexFolderBtn.innerHTML = textoOriginal;
+      indexBtn.disabled = false;
+      indexBtn.innerHTML = textoOriginal;
     }
   }
 
@@ -481,17 +694,17 @@ document.addEventListener('DOMContentLoaded', () => {
     indexingStatus.textContent = mensaje;
     indexingStatus.className = `status-text ${tipo}`;
     indexingStatus.classList.remove('hidden');
-    
+
     if (tipo === 'success') {
       setTimeout(() => {
         indexingStatus.classList.add('hidden');
       }, 5000);
     }
   }
-  
+
   // Event listeners principales
   searchBtn.addEventListener('click', buscarDocumentos);
-  
+
   resetBtn.addEventListener('click', () => {
     document.getElementById('keyword').value = '';
     document.getElementById('dateFrom').value = '';
@@ -500,11 +713,12 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsContainer.innerHTML = '';
     mostrarNotificacion('Formulario limpiado', 'info');
   });
-  
+
   // Event listeners para indexación
   browseFolderBtn.addEventListener('click', examinarCarpeta);
-  indexFolderBtn.addEventListener('click', indexarRutaEspecifica);
-  
+  browseFilesBtn.addEventListener('click', examinarArchivos);
+  indexBtn.addEventListener('click', indexarRutaEspecifica);
+
   // Búsqueda con Enter
   document.getElementById('keyword').addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
@@ -516,7 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const pauseBtn = document.getElementById('pause-progress-btn');
   const resumeBtn = document.getElementById('resume-progress-btn');
   const cancelBtn = document.getElementById('cancel-progress-btn');
-    if (pauseBtn) {
+  if (pauseBtn) {
     pauseBtn.addEventListener('click', async () => {
       if (indexacionEnProgreso && !indexacionPausada) {
         try {
@@ -566,9 +780,9 @@ document.addEventListener('DOMContentLoaded', () => {
               indexacionCancelada = true;
               indexacionEnProgreso = false;
               updateProgressSection({ currentFile: 'Cancelado por el usuario' });
-              
+
               mostrarNotificacion('Indexación cancelada. Los documentos procesados se han guardado.', 'info');
-              
+
               setTimeout(() => {
                 hideProgressSection();
               }, 2000);
@@ -610,6 +824,7 @@ function resetProgressSection() {
     total: document.getElementById('counter-total'),
     processed: document.getElementById('counter-processed'),
     success: document.getElementById('counter-success'),
+    existing: document.getElementById('counter-existing'),
     errors: document.getElementById('counter-errors'),
     progressFill: document.getElementById('main-progress-fill'),
     progressPercentage: document.getElementById('main-progress-percentage'),
@@ -621,31 +836,32 @@ function resetProgressSection() {
     pauseBtn: document.getElementById('pause-progress-btn'),
     resumeBtn: document.getElementById('resume-progress-btn')
   };
-  
+
   // Resetear contadores
   if (elements.total) elements.total.textContent = '0';
   if (elements.processed) elements.processed.textContent = '0';
   if (elements.success) elements.success.textContent = '0';
+  if (elements.existing) elements.existing.textContent = '0';
   if (elements.errors) elements.errors.textContent = '0';
-  
+
   // Resetear barra de progreso
   if (elements.progressFill) elements.progressFill.style.width = '0%';
   if (elements.progressPercentage) elements.progressPercentage.textContent = '0%';
-  
+
   // Resetear archivo actual
   if (elements.currentFile) elements.currentFile.textContent = 'Iniciando...';
-  
+
   // Resetear tiempos
   if (elements.timeElapsed) elements.timeElapsed.textContent = '00:00';
   if (elements.timeEstimated) elements.timeEstimated.textContent = 'Calculando...';
-  
+
   // Ocultar errores
   if (elements.errorsContainer) elements.errorsContainer.classList.add('hidden');
   if (elements.errorsContent) {
     elements.errorsContent.classList.add('hidden');
     elements.errorsContent.innerHTML = '';
   }
-  
+
   // Mostrar botón pausar, ocultar reanudar
   if (elements.pauseBtn) elements.pauseBtn.classList.remove('hidden');
   if (elements.resumeBtn) elements.resumeBtn.classList.add('hidden');
@@ -657,6 +873,7 @@ function updateProgressSection(data) {
     total: document.getElementById('counter-total'),
     processed: document.getElementById('counter-processed'),
     success: document.getElementById('counter-success'),
+    existing: document.getElementById('counter-existing'),
     errors: document.getElementById('counter-errors'),
     progressFill: document.getElementById('main-progress-fill'),
     progressPercentage: document.getElementById('main-progress-percentage'),
@@ -666,7 +883,7 @@ function updateProgressSection(data) {
     errorsContainer: document.getElementById('errors-container'),
     errorsCountDisplay: document.getElementById('errors-count-display')
   };
-  
+
   // Actualizar contadores
   if (data.total !== undefined && elements.total) {
     elements.total.textContent = data.total;
@@ -677,22 +894,25 @@ function updateProgressSection(data) {
   if (data.success !== undefined && elements.success) {
     elements.success.textContent = data.success;
   }
+  if (data.existing !== undefined && elements.existing) {
+    elements.existing.textContent = data.existing;
+  }
   if (data.errors !== undefined && elements.errors) {
     elements.errors.textContent = data.errors;
   }
-  
+
   // Actualizar barra de progreso
   if (data.total && data.processed !== undefined && elements.progressFill && elements.progressPercentage) {
     const percentage = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
     elements.progressFill.style.width = `${percentage}%`;
     elements.progressPercentage.textContent = `${percentage}%`;
   }
-  
+
   // Actualizar archivo actual
   if (data.currentFile && elements.currentFile) {
     elements.currentFile.textContent = data.currentFile;
   }
-  
+
   // Actualizar tiempos
   if (data.elapsedTime && elements.timeElapsed) {
     elements.timeElapsed.textContent = data.elapsedTime;
@@ -700,7 +920,7 @@ function updateProgressSection(data) {
   if (data.estimatedTime && elements.timeEstimated) {
     elements.timeEstimated.textContent = data.estimatedTime;
   }
-  
+
   // Mostrar errores si los hay
   if (data.errors && data.errors > 0 && elements.errorsContainer && elements.errorsCountDisplay) {
     elements.errorsContainer.classList.remove('hidden');
@@ -716,7 +936,7 @@ function addProgressError(filename, errorMessage) {
     errorItem.className = 'error-item-inline';
     errorItem.textContent = `${filename}: ${errorMessage}`;
     errorsContent.appendChild(errorItem);
-    
+
     // Actualizar contador de errores
     const currentErrors = parseInt(document.getElementById('counter-errors')?.textContent) || 0;
     updateProgressSection({ errors: currentErrors + 1 });
@@ -727,7 +947,7 @@ function addProgressError(filename, errorMessage) {
 function toggleProgressErrors() {
   const errorsContent = document.getElementById('errors-content');
   const errorsArrow = document.querySelector('.errors-arrow');
-  
+
   if (errorsContent && errorsArrow) {
     if (errorsContent.classList.contains('hidden')) {
       errorsContent.classList.remove('hidden');
@@ -745,11 +965,11 @@ function markProgressCompleted() {
   if (progressSection) {
     progressSection.classList.add('completed');
   }
-  
+
   // Ocultar controles de pausa/reanudar
   const pauseBtn = document.getElementById('pause-progress-btn');
   const resumeBtn = document.getElementById('resume-progress-btn');
-  
+
   if (pauseBtn) pauseBtn.classList.add('hidden');
   if (resumeBtn) resumeBtn.classList.add('hidden');
 }
@@ -766,10 +986,10 @@ function showProgressSummary(data) {
     elapsedTime: data.totalTime || data.elapsedTime || '00:00',
     estimatedTime: 'Finalizado'
   });
-  
+
   // Marcar como completado
   markProgressCompleted();
-  
+
   // Auto-ocultar después de 10 segundos
   setTimeout(() => {
     hideProgressSection();

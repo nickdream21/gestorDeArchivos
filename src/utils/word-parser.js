@@ -107,37 +107,42 @@ const nlp = require('compromise');
  * @param {string} texto - Texto del documento
  * @returns {string} - Asunto detectado o cadena vacía
  */
+/**
+ * Intenta detectar automáticamente el asunto usando NLP y regex avanzado
+ * @param {string} texto - Texto del documento
+ * @returns {string} - Asunto detectado o cadena vacía
+ */
 function detectingAsuntoNLP(texto) {
   if (!texto) return '';
 
-  // 1. Patrones explícitos (Legacy regex priority)
+  // 1. Patrones explícitos mejorados (prioridad máxima)
+  // Busca "ASUNTO:" o similar, tolerando espacios y permitiendo contenido multi-linea hasta doble salto
   const patrones = [
-    /(?:asunto|subject|tema|ref|referencia):\s*(.+)/i,
-    /(?:VISTO|VISTOS):?\s*(.+)/i, // Común en documentos legales/administrativos
-    /(?:SUMILLA):?\s*(.+)/i
+    /(?:A\s*S\s*U\s*N\s*T\s*O|A\s*L\s*C\s*A\s*N\s*Z\s*O|S\s*U\s*B\s*J\s*E\s*C\s*T|T\s*E\s*M\s*A|R\s*E\s*F(?:\s*E\s*R\s*E\s*N\s*C\s*I\s*A)?|S\s*U\s*M\s*I\s*L\s*L\s*A)\s*[:.-]\s*((?:.|\n\s+)+?)(?:\n\s*(?:DATE|FECHA|PARA|DE|FROM|TO)|$|\n{2,})/i,
+    /(?:VISTOS?|SUMILLA)\s*[:.-]\s*(.+)/i
   ];
 
+  // Analizar primeras 4000 caracteres (suele estar al inicio)
+  const inicioTexto = texto.substring(0, 4000);
+
   for (const patron of patrones) {
-    const match = texto.match(patron);
+    const match = inicioTexto.match(patron);
     if (match && match[1]) {
-      let asunto = match[1].trim();
-      if (asunto.length > 5 && asunto.length < 300) return asunto;
+      let asunto = match[1].replace(/\s+/g, ' ').trim(); // Normalizar espacios
+      if (asunto.length > 5 && asunto.length < 500) return asunto;
     }
   }
 
-  // 2. Usar NLP para extraer tópicos si no hay asunto explícito
-  // Analizamos los primeros 2000 caracteres para no ser lentos
-  const doc = nlp(texto.substring(0, 2000));
-
-  // Buscar "Topics" (Entidades importantes)
+  // 2. Usar NLP para extraer tópicos como fallback
+  const doc = nlp(inicioTexto.substring(0, 2000));
   const topics = doc.topics().out('array');
   if (topics.length > 0) {
-    // Retornamos el tópico más relevante si parece un título
     return topics[0];
   }
 
   // 3. Fallback: Primera línea sustancial
-  const primeraLinea = texto.split('\n').find(l => l.trim().length > 15 && l.trim().length < 150);
+  const lineas = texto.split('\n');
+  const primeraLinea = lineas.find(l => l.trim().length > 15 && l.trim().length < 150);
   if (primeraLinea) return primeraLinea.trim();
 
   return '';

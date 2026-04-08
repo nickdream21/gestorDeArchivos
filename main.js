@@ -57,15 +57,21 @@ async function procesarArchivo(rutaArchivo) {
       // Si el texto es muy corto (probablemente escaneado), intentar OCR
       if (!info.texto || info.texto.trim().length < 100) {
         console.log(`Texto PDF insuficiente. Intentando OCR...`);
-        const textoOCR = await processWithOCR(rutaArchivo, 'pdf');
-        if (textoOCR && textoOCR.length > 0) {
-          info.texto = textoOCR;
-          // Re-detectar asunto usando compromise
-          const nlp = require('compromise');
-          const doc = nlp(textoOCR.substring(0, 1000));
-          const topics = doc.topics().out('array');
-          if (topics.length > 0) info.asunto = topics[0];
-          else info.asunto = "Documento Escaneado (OCR)";
+        const ocrResult = await processWithOCR(rutaArchivo, 'pdf');
+        if (ocrResult && ocrResult.text && ocrResult.text.length > 0) {
+          info.texto = ocrResult.text;
+
+          // Si Python detectó el asunto, usarlo (Prioridad 1)
+          if (ocrResult.subject) {
+            info.asunto = ocrResult.subject;
+          } else {
+            // Si no, intentar NLP JS (Fallback)
+            const nlp = require('compromise');
+            const doc = nlp(ocrResult.text.substring(0, 1000));
+            const topics = doc.topics().out('array');
+            if (topics.length > 0) info.asunto = topics[0];
+            else info.asunto = "Documento Escaneado (OCR)";
+          }
         }
       }
       return info;
@@ -78,10 +84,14 @@ async function procesarArchivo(rutaArchivo) {
       return await excelParser.extraerTextoExcel(rutaArchivo);
     } else if (['.jpg', '.jpeg', '.png'].includes(extension)) {
       console.log(`Procesando Imagen: ${rutaArchivo}`);
-      const textoOCR = await processWithOCR(rutaArchivo, extension.substring(1));
+      const ocrResult = await processWithOCR(rutaArchivo, extension.substring(1));
+      let asuntoImg = 'Imagen Escaneada';
+      if (ocrResult.subject) asuntoImg = ocrResult.subject;
+      else if (ocrResult.text) asuntoImg = ocrResult.text.substring(0, 50) + '...';
+
       return {
-        texto: textoOCR || '',
-        asunto: textoOCR ? (textoOCR.substring(0, 50) + '...') : 'Imagen Escaneada',
+        texto: ocrResult.text || '',
+        asunto: asuntoImg,
         metadatos: { tipo: 'imagen', original: extension }
       };
     } else {
@@ -105,9 +115,21 @@ function processWithOCR(filePath, fileType) {
   return new Promise((resolve, reject) => {
     console.log(`Iniciando OCR con Python para: ${filePath}`);
 
-    // Comando para ejecutar el script de Python
-    const pythonScript = path.join(__dirname, 'src', 'ocr', 'ocr_engine.py');
-    const command = `python "${pythonScript}" "${filePath}"`;
+    // Comando para ejecutar el OCR
+    let command;
+
+    if (app.isPackaged) {
+      // Producción: Usar el ejecutable empaquetado
+      // La estructura en resources será: resources/ocr_engine/ocr_engine.exe
+      const exePath = path.join(process.resourcesPath, 'ocr_engine', 'ocr_engine.exe');
+      command = `"${exePath}" "${filePath}"`;
+      console.log(`Usando motor OCR empaquetado: ${exePath}`);
+    } else {
+      // Desarrollo: Usar python script directo
+      const pythonScript = path.join(__dirname, 'src', 'ocr', 'ocr_engine.py');
+      command = `python "${pythonScript}" "${filePath}"`;
+      console.log(`Usando script Python dev: ${pythonScript}`);
+    }
 
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       if (error) {
@@ -123,15 +145,18 @@ function processWithOCR(filePath, fileType) {
 
         if (result.success) {
           console.log(`OCR Python completado. Longitud: ${result.text.length}`);
-          resolve(result.text);
+          resolve({
+            text: result.text,
+            subject: result.subject // Now returning object instead of just text
+          });
         } else {
           console.error(`Error reportado por OCR Python: ${result.error}`);
-          resolve('');
+          resolve({ text: '', subject: null });
         }
       } catch (parseError) {
         console.error('Error al parsear salida de Python:', parseError);
-        if (stdout.trim().length > 0) resolve(stdout);
-        else resolve('');
+        if (stdout.trim().length > 0) resolve({ text: stdout, subject: null });
+        else resolve({ text: '', subject: null });
       }
     });
   });
@@ -151,7 +176,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      devTools: true // Asegurar que DevTools esté disponible
+      devTools: !app.isPackaged // DevTools solo en desarrollo
     }
   });
 
@@ -180,8 +205,10 @@ function createWindow() {
     }
   }
 
-  // Abrir DevTools para depuración
-  mainWindow.webContents.openDevTools();
+  // Abrir DevTools solo en desarrollo
+  if (!app.isPackaged) {
+    mainWindow.webContents.openDevTools();
+  }
 
   // Detectar errores al cargar la página
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
@@ -432,8 +459,264 @@ function formatearTiempo(segundos) {
   return `${minutos.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}`;
 }
 
+// Función auxiliar para determinar el tipo de documento por nombre (Globalizada)
+function determinarTipoDocumento(nombre) {
+  nombre = nombre.toLowerCase();
+
+  if (nombre.includes('carta') || nombre.startsWith('carta')) {
+    return 'carta';
+  } else if (nombre.includes('informe')) {
+    return 'informe';
+  } else if (nombre.includes('contrato')) {
+    return 'contrato';
+  } else if (nombre.includes('memo') || nombre.includes('memorando')) {
+    return 'memorando';
+  } else if (nombre.includes('acta')) {
+    return 'acta';
+  } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
+    return 'resolución';
+  } else {
+    return 'otro';
+  }
+}
+
+// Función centralizada para procesar una lista de documentos con progreso
+async function procesarListaDeDocumentos(documentos) {
+  // Caso especial: no hay documentos
+  if (!documentos || documentos.length === 0) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('indexacion-progreso', {
+        tipo: 'sin-documentos',
+        message: 'No se encontraron documentos válidos para indexar'
+      });
+    }
+    return {
+      success: true,
+      message: 'No se encontraron documentos válidos',
+      documentosIndexados: 0,
+      documentosExistentes: 0,
+      errores: 0,
+      total: 0
+    };
+  }
+
+  // Enviar información inicial al frontend
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('indexacion-progreso', {
+      tipo: 'inicio',
+      total: documentos.length,
+      processed: 0,
+      success: 0,
+      errors: 0,
+      existing: 0,
+      currentFile: 'Analizando documentos...'
+    });
+  }
+
+  let indexados = 0;
+  let exitosos = 0;
+  let errores = 0;
+  let yaExisten = 0;
+  const tiempoInicio = Date.now();
+
+  // Para cálculo de tiempo más preciso (solo considera tiempo de procesamiento real)
+  let tiempoProcesamientoTotal = 0;
+  let documentosProcesadosReal = 0; // Solo los que realmente se procesan (no existentes)
+
+  // Procesar cada documento
+  for (let i = 0; i < documentos.length; i++) {
+    const doc = documentos[i];
+
+    // VERIFICAR CONTROL DE PAUSA
+    while (indexacionPausada && !indexacionCancelada) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // VERIFICAR CONTROL DE CANCELACIÓN
+    if (indexacionCancelada) {
+      console.log('Indexación cancelada por el usuario');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('indexacion-progreso', {
+          tipo: 'cancelado',
+          total: documentos.length,
+          processed: indexados,
+          success: exitosos,
+          errors: errores,
+          existing: yaExisten,
+          currentFile: 'Cancelado por el usuario',
+          elapsedTime: formatearTiempo(Math.floor((Date.now() - tiempoInicio) / 1000)),
+          estimatedTime: '--:--'
+        });
+      }
+      break;
+    }
+
+    try {
+      // Calcular tiempo transcurrido
+      const tiempoTranscurrido = Math.floor((Date.now() - tiempoInicio) / 1000);
+
+      // Calcular tiempo estimado basado en el promedio de procesamiento real
+      let tiempoEstimadoStr = 'Calculando...';
+      if (documentosProcesadosReal > 0) {
+        const promedioMs = tiempoProcesamientoTotal / documentosProcesadosReal;
+        // Estimar cuántos documentos nuevos quedan (asumiendo misma proporción)
+        const proporcionNuevos = documentosProcesadosReal / (indexados || 1);
+        const restantes = documentos.length - indexados;
+        const estimadosNuevos = Math.ceil(restantes * proporcionNuevos);
+        const tiempoRestante = Math.floor((promedioMs * estimadosNuevos) / 1000);
+        tiempoEstimadoStr = formatearTiempo(tiempoRestante);
+      } else if (indexados > 0 && yaExisten === indexados) {
+        // Todos los procesados hasta ahora ya existían
+        tiempoEstimadoStr = '< 00:01';
+      }
+
+      // Enviar progreso actual al frontend
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('indexacion-progreso', {
+          tipo: 'progreso',
+          total: documentos.length,
+          processed: indexados,
+          success: exitosos,
+          errors: errores,
+          existing: yaExisten,
+          currentFile: doc.nombre,
+          elapsedTime: formatearTiempo(tiempoTranscurrido),
+          estimatedTime: tiempoEstimadoStr,
+          percentage: Math.round(((indexados + 1) / documentos.length) * 100)
+        });
+      }
+
+      // Verificar si ya existe en la base de datos
+      const existe = await database.documentoExiste(doc.ruta);
+      if (existe) {
+        console.log(`El documento ya existe: ${doc.nombre}`);
+        yaExisten++;
+        indexados++;
+
+        // Notificar que se saltó un archivo existente
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('indexacion-progreso', {
+            tipo: 'existente',
+            archivo: doc.nombre,
+            processed: indexados,
+            existing: yaExisten
+          });
+        }
+        continue;
+      }
+
+      // Procesar el documento - medir tiempo
+      console.log(`Procesando ${doc.extension.toUpperCase()}: ${doc.nombre}`);
+      const inicioProc = Date.now();
+
+      const infoPromise = procesarArchivo(doc.ruta);
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Tiempo límite excedido (2 min)')), 120000);
+      });
+
+      let documentoInfo;
+      try {
+        documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
+
+        // Guardar en la base de datos
+        await database.agregarDocumento({
+          nombre: doc.nombre,
+          ruta: doc.ruta,
+          tipo: doc.tipo,
+          fecha: doc.fecha,
+          asunto: documentoInfo.asunto || 'Sin asunto',
+          contenido: documentoInfo.texto || ''
+        });
+
+        exitosos++;
+
+        // Actualizar métricas de tiempo
+        tiempoProcesamientoTotal += (Date.now() - inicioProc);
+        documentosProcesadosReal++;
+
+      } catch (docError) {
+        console.error(`Error al procesar ${doc.nombre}: ${docError.message}`);
+        errores++;
+
+        // Enviar error específico al frontend
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('indexacion-progreso', {
+            tipo: 'error',
+            archivo: doc.nombre,
+            error: docError.message
+          });
+        }
+      }
+
+      indexados++;
+
+    } catch (generalError) {
+      console.error(`Error general al procesar ${doc.nombre}:`, generalError);
+      errores++;
+      indexados++;
+    }
+  }
+
+  // Finalizar indexación
+  indexacionEnProgreso = false;
+  indexacionPausada = false;
+
+  const tiempoTotal = Math.floor((Date.now() - tiempoInicio) / 1000);
+
+  // Determinar tipo de finalización
+  if (!indexacionCancelada) {
+    let tipoFinal = 'completado';
+    let mensajeFinal = 'Indexación completada';
+
+    // Caso especial: todos los archivos ya existían
+    if (yaExisten === documentos.length && exitosos === 0 && errores === 0) {
+      tipoFinal = 'todos-existentes';
+      mensajeFinal = 'Todos los archivos ya estaban indexados';
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('indexacion-progreso', {
+        tipo: tipoFinal,
+        total: documentos.length,
+        processed: indexados,
+        success: exitosos,
+        errors: errores,
+        existing: yaExisten,
+        currentFile: mensajeFinal,
+        elapsedTime: formatearTiempo(tiempoTotal),
+        estimatedTime: 'Finalizado',
+        percentage: 100
+      });
+    }
+  }
+
+  // Generar mensaje de resumen
+  let mensaje;
+  if (indexacionCancelada) {
+    mensaje = `Cancelado: ${exitosos} procesados, ${yaExisten} existían, ${errores} errores`;
+  } else if (yaExisten === documentos.length && exitosos === 0) {
+    mensaje = `Todos los ${yaExisten} archivos ya estaban indexados`;
+  } else {
+    mensaje = `Completado: ${exitosos} nuevos, ${yaExisten} existían, ${errores} errores`;
+  }
+  console.log(mensaje);
+
+  // Resetear flag de cancelación para próxima ejecución
+  indexacionCancelada = false;
+
+  return {
+    success: true,
+    message: mensaje,
+    documentosIndexados: exitosos,
+    documentosExistentes: yaExisten,
+    errores: errores,
+    total: documentos.length,
+    todosExistentes: yaExisten === documentos.length && exitosos === 0
+  };
+}
+
 // NUEVA FUNCIÓN DE INDEXACIÓN CON PROGRESO EN TIEMPO REAL
-async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
+async function indexarCarpetaEspecificaConProgreso(rutaCarpeta, filtros = {}) {
   try {
     console.log(`Iniciando indexación con progreso en tiempo real: ${rutaCarpeta}`);
 
@@ -463,13 +746,29 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
           } else if (stats.isFile() && esArchivoValido(rutaCompleta)) {
             const extension = path.extname(rutaCompleta).toLowerCase();
 
-            archivos.push({
-              nombre: elemento,
-              ruta: rutaCompleta,
-              tipo: determinarTipoDocumento(elemento),
-              fecha: stats.mtime.toISOString().split('T')[0],
-              extension: extension
-            });
+            // Aplicar filtros
+            let cumpleFiltros = true;
+            if (filtros) {
+                if (filtros.type && filtros.type !== 'all') {
+                    if (filtros.type === 'pdf' && extension !== '.pdf') cumpleFiltros = false;
+                    if (filtros.type === 'word' && !['.doc', '.docx'].includes(extension)) cumpleFiltros = false;
+                    if (filtros.type === 'excel' && !['.xls', '.xlsx'].includes(extension)) cumpleFiltros = false;
+                    if (filtros.type === 'image' && !['.jpg', '.jpeg', '.png'].includes(extension)) cumpleFiltros = false;
+                }
+                const fechaArchivo = stats.mtime.toISOString().split('T')[0];
+                if (filtros.dateFrom && fechaArchivo < filtros.dateFrom) cumpleFiltros = false;
+                if (filtros.dateTo && fechaArchivo > filtros.dateTo) cumpleFiltros = false;
+            }
+
+            if (cumpleFiltros) {
+              archivos.push({
+                nombre: elemento,
+                ruta: rutaCompleta,
+                tipo: determinarTipoDocumento(elemento),
+                fecha: stats.mtime.toISOString().split('T')[0],
+                extension: extension
+              });
+            }
           }
         }
       } catch (error) {
@@ -479,191 +778,12 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta) {
       return archivos;
     }
 
-    function determinarTipoDocumento(nombre) {
-      nombre = nombre.toLowerCase();
-
-      if (nombre.includes('carta') || nombre.startsWith('carta')) {
-        return 'carta';
-      } else if (nombre.includes('informe')) {
-        return 'informe';
-      } else if (nombre.includes('contrato')) {
-        return 'contrato';
-      } else if (nombre.includes('memo') || nombre.includes('memorando')) {
-        return 'memorando';
-      } else if (nombre.includes('acta')) {
-        return 'acta';
-      } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
-        return 'resolución';
-      } else {
-        return 'otro';
-      }
-    }
-
     // Obtener todos los archivos válidos
     const documentos = obtenerArchivosValidos(rutaCarpeta);
     console.log(`Se encontraron ${documentos.length} documentos válidos.`);
 
-    // Enviar información inicial al frontend
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('indexacion-progreso', {
-        tipo: 'inicio',
-        total: documentos.length,
-        processed: 0,
-        success: 0,
-        errors: 0,
-        currentFile: 'Iniciando indexación...'
-      });
-    }
+    return await procesarListaDeDocumentos(documentos);
 
-    let indexados = 0;
-    let exitosos = 0;
-    let errores = 0;
-    let yaExisten = 0;
-    const tiempoInicio = Date.now();
-
-    // Procesar cada documento
-    for (let i = 0; i < documentos.length; i++) {
-      const doc = documentos[i];
-
-      // VERIFICAR CONTROL DE PAUSA
-      while (indexacionPausada && !indexacionCancelada) {
-        await new Promise(resolve => setTimeout(resolve, 100)); // Esperar 100ms
-      }
-
-      // VERIFICAR CONTROL DE CANCELACIÓN
-      if (indexacionCancelada) {
-        console.log('Indexación cancelada por el usuario');
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('indexacion-progreso', {
-            tipo: 'cancelado',
-            total: documentos.length,
-            processed: indexados,
-            success: exitosos,
-            errors: errores,
-            existing: yaExisten,
-            currentFile: 'Cancelado por el usuario',
-            elapsedTime: formatearTiempo(Math.floor((Date.now() - tiempoInicio) / 1000)),
-            estimatedTime: 'Cancelado'
-          });
-        }
-        break;
-      }
-
-      try {
-        // Calcular tiempo transcurrido y estimado
-        const tiempoTranscurrido = Math.floor((Date.now() - tiempoInicio) / 1000);
-        const tiempoEstimado = indexados > 0 ?
-          Math.floor((tiempoTranscurrido / indexados) * (documentos.length - indexados)) : 0;
-
-        // Enviar progreso actual al frontend
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('indexacion-progreso', {
-            tipo: 'progreso',
-            total: documentos.length,
-            processed: indexados,
-            success: exitosos,
-            errors: errores,
-            currentFile: doc.nombre,
-            elapsedTime: formatearTiempo(tiempoTranscurrido),
-            estimatedTime: formatearTiempo(tiempoEstimado),
-            percentage: Math.round((indexados / documentos.length) * 100)
-          });
-        }
-
-        // Verificar si ya existe en la base de datos
-        const existe = await database.documentoExiste(doc.ruta);
-        if (existe) {
-          console.log(`El documento ya existe: ${doc.nombre}`);
-          yaExisten++;
-          indexados++;
-          continue;
-        }
-
-        // Procesar el documento
-        console.log(`Procesando ${doc.extension.toUpperCase()}: ${doc.nombre}`);
-
-        const infoPromise = procesarArchivo(doc.ruta);
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Tiempo límite excedido al procesar documento')), 120000);
-        });
-
-        let documentoInfo;
-        try {
-          documentoInfo = await Promise.race([infoPromise, timeoutPromise]);
-
-          // Guardar en la base de datos
-          await database.agregarDocumento({
-            nombre: doc.nombre,
-            ruta: doc.ruta,
-            tipo: doc.tipo,
-            fecha: doc.fecha,
-            asunto: documentoInfo.asunto || 'Sin asunto',
-            contenido: documentoInfo.texto || ''
-          });
-
-          exitosos++;
-
-        } catch (docError) {
-          console.error(`Error al procesar ${doc.nombre}: ${docError.message}`);
-          errores++;
-
-          // Enviar error específico al frontend
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('indexacion-progreso', {
-              tipo: 'error',
-              archivo: doc.nombre,
-              error: docError.message
-            });
-          }
-        }
-
-        indexados++;
-
-      } catch (generalError) {
-        console.error(`Error general al procesar ${doc.nombre}:`, generalError);
-        errores++;
-        indexados++;
-      }
-    }
-    // Finalizar indexación
-    indexacionEnProgreso = false;
-    indexacionPausada = false;
-
-    // Enviar progreso final solo si no se canceló
-    if (!indexacionCancelada) {
-      const tiempoTotal = Math.floor((Date.now() - tiempoInicio) / 1000);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('indexacion-progreso', {
-          tipo: 'completado',
-          total: documentos.length,
-          processed: indexados,
-          success: exitosos,
-          errors: errores,
-          existing: yaExisten,
-          currentFile: 'Indexación completada',
-          elapsedTime: formatearTiempo(tiempoTotal),
-          estimatedTime: 'Finalizado',
-          percentage: 100
-        });
-      }
-    }
-
-    const mensaje = indexacionCancelada ?
-      `Cancelado: ${exitosos} procesados, ${yaExisten} existían, ${errores} errores` :
-      `Completado: ${exitosos} nuevos, ${yaExisten} existían, ${errores} errores`;
-    console.log(mensaje);
-
-    // Resetear flag de cancelación para próxima ejecución
-    indexacionCancelada = false;
-
-    return {
-      success: true,
-      message: mensaje,
-      documentosIndexados: exitosos,
-      documentosExistentes: yaExisten,
-      errores: errores,
-      total: documentos.length
-    };
   } catch (error) {
     console.error('Error durante la indexación:', error);
 
@@ -729,6 +849,15 @@ app.on('window-all-closed', function () {
   }
 });
 
+// Validar que una ruta sea un archivo de documento legítimo (no ejecutable ni ruta sospechosa)
+function esRutaSegura(ruta) {
+  if (!ruta || typeof ruta !== 'string') return false;
+  const normalized = path.resolve(ruta);
+  const ext = path.extname(normalized).toLowerCase();
+  const extensionesPermitidas = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.jpg', '.jpeg', '.png'];
+  return extensionesPermitidas.includes(ext);
+}
+
 // Manejadores IPC existentes
 ipcMain.handle('buscar-documentos', async (event, criterios) => {
   console.log('Búsqueda solicitada con criterios:', criterios);
@@ -747,6 +876,11 @@ ipcMain.handle('buscar-documentos', async (event, criterios) => {
 ipcMain.handle('abrir-documento', async (event, ruta) => {
   try {
     console.log('Intentando abrir documento:', ruta);
+    // Validar que sea un tipo de archivo permitido
+    if (!esRutaSegura(ruta)) {
+      console.error('Ruta no permitida:', ruta);
+      return { success: false, error: 'Tipo de archivo no permitido' };
+    }
     // Verificar si el archivo existe
     if (fs.existsSync(ruta)) {
       console.log('El archivo existe, abriéndolo...');
@@ -866,10 +1000,10 @@ ipcMain.handle('seleccionar-carpeta', async (event) => {
   }
 });
 
-ipcMain.handle('indexar-carpeta-especifica', async (event, rutaCarpeta) => {
+ipcMain.handle('indexar-carpeta-especifica', async (event, { rutaCarpeta, filtros }) => {
   try {
     console.log(`Solicitud de indexación de carpeta específica: ${rutaCarpeta}`);
-    const resultado = await indexarCarpetaEspecificaConProgreso(rutaCarpeta);
+    const resultado = await indexarCarpetaEspecificaConProgreso(rutaCarpeta, filtros);
     return resultado;
   } catch (error) {
     console.error('Error durante la indexación de carpeta específica:', error);
@@ -910,7 +1044,7 @@ ipcMain.handle('procesar-documento-nuevo', async (event, { documento, asunto }) 
 });
 
 ipcMain.handle('configurar-verificacion-automatica', async (event, { activa }) => {
-  verificacionAutomaticaActiva = false;
+  verificacionAutomaticaActiva = activa;
   console.log(`Verificación automática ${verificacionAutomaticaActiva ? 'activada' : 'desactivada'}`);
 
   // Si se está activando y no hay timer, iniciarlo
@@ -996,6 +1130,196 @@ ipcMain.handle('cancelar-indexacion', async (event) => {
     return { success: false, message: 'No hay indexación en progreso para cancelar' };
   } catch (error) {
     console.error('Error al cancelar indexación:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// NUEVOS MANEJADORES PARA SELECCIÓN DE ARCHIVOS
+ipcMain.handle('seleccionar-archivos', async (event) => {
+  try {
+    console.log('Abriendo diálogo de selección de archivos...');
+
+    const resultado = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile', 'multiSelections'],
+      title: 'Seleccionar archivos para indexar',
+      buttonLabel: 'Seleccionar',
+      filters: [
+        { name: 'Documentos', extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'jpg', 'jpeg', 'png'] }
+      ]
+    });
+
+    if (resultado.canceled) {
+      console.log('Selección de archivos cancelada por el usuario');
+      return { success: false, canceled: true };
+    }
+
+    const archivosSeleccionados = resultado.filePaths;
+    console.log(`${archivosSeleccionados.length} archivos seleccionados`);
+
+    return {
+      success: true,
+      files: archivosSeleccionados
+    };
+  } catch (error) {
+    console.error('Error al mostrar diálogo de selección de archivos:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('indexar-archivos-seleccionados', async (event, { archivos: archivosPaths, filtros }) => {
+  try {
+    console.log(`Solicitud de indexación de ${archivosPaths.length} archivos específicos`);
+
+    // Mapear paths a objetos de documento
+    const documentos = archivosPaths.map(rutaCompleta => {
+      // Verificar si existe antes de procesar
+      if (!fs.existsSync(rutaCompleta)) return null;
+
+      const stats = fs.statSync(rutaCompleta);
+      const elemento = path.basename(rutaCompleta);
+      const extension = path.extname(rutaCompleta).toLowerCase();
+
+      // Aplicar filtros
+      if (filtros) {
+        if (filtros.type && filtros.type !== 'all') {
+            if (filtros.type === 'pdf' && extension !== '.pdf') return null;
+            if (filtros.type === 'word' && !['.doc', '.docx'].includes(extension)) return null;
+            if (filtros.type === 'excel' && !['.xls', '.xlsx'].includes(extension)) return null;
+            if (filtros.type === 'image' && !['.jpg', '.jpeg', '.png'].includes(extension)) return null;
+        }
+        const fechaArchivo = stats.mtime.toISOString().split('T')[0];
+        if (filtros.dateFrom && fechaArchivo < filtros.dateFrom) return null;
+        if (filtros.dateTo && fechaArchivo > filtros.dateTo) return null;
+      }
+
+      return {
+        nombre: elemento,
+        ruta: rutaCompleta,
+        tipo: determinarTipoDocumento(elemento),
+        fecha: stats.mtime.toISOString().split('T')[0],
+        extension: extension
+      };
+    }).filter(doc => doc !== null); // Filtrar nulos si algún archivo fue borrado
+
+    // Iniciar indexación global (usa las mismas variables de control)
+    indexacionEnProgreso = true;
+    indexacionPausada = false;
+    indexacionCancelada = false;
+
+    const resultado = await procesarListaDeDocumentos(documentos);
+    return resultado;
+  } catch (error) {
+    console.error('Error durante la indexación de archivos específicos:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Manejador para abrir archivo en carpeta
+ipcMain.handle('abrir-en-carpeta', async (event, ruta) => {
+  try {
+    console.log(`Abriendo en carpeta: ${ruta}`);
+    if (!fs.existsSync(ruta)) {
+      return { success: false, error: 'El archivo no existe' };
+    }
+    shell.showItemInFolder(ruta);
+    return { success: true };
+  } catch (error) {
+    console.error('Error al abrir en carpeta:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// NUEVOS MANEJADORES PARA DESCARGA DE DOCUMENTOS
+ipcMain.handle('descargar-documento', async (event, rutaOrigen) => {
+  try {
+    console.log(`Solicitud de descarga para: ${rutaOrigen}`);
+
+    if (!fs.existsSync(rutaOrigen)) {
+      return { success: false, error: 'El archivo original no existe' };
+    }
+
+    const extension = path.extname(rutaOrigen);
+    const nombreArchivo = path.basename(rutaOrigen);
+
+    // Mostrar diálogo de guardar
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Guardar documento',
+      defaultPath: nombreArchivo,
+      buttonLabel: 'Guardar'
+    });
+
+    if (!filePath) {
+      return { success: false, canceled: true };
+    }
+
+    // Copiar el archivo
+    fs.copyFileSync(rutaOrigen, filePath);
+    console.log(`Archivo guardado en: ${filePath}`);
+
+    return { success: true, path: filePath };
+  } catch (error) {
+    console.error('Error al descargar documento:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('descargar-varios-documentos', async (event, rutas) => {
+  try {
+    console.log(`Solicitud de descarga masiva para ${rutas.length} documentos`);
+
+    // Validar que hay archivos
+    const archivosValidos = rutas.filter(r => fs.existsSync(r));
+    if (archivosValidos.length === 0) {
+      return { success: false, error: 'Ninguno de los archivos seleccionados existe' };
+    }
+
+    // Seleccionar carpeta de destino
+    const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Seleccionar carpeta de destino',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Descargar aquí'
+    });
+
+    if (canceled || filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    const carpetaDestino = filePaths[0];
+    let exitosos = 0;
+    let errores = 0;
+
+    for (const rutaOrigen of archivosValidos) {
+      try {
+        const nombreOriginal = path.basename(rutaOrigen);
+        let rutaDestino = path.join(carpetaDestino, nombreOriginal);
+
+        // Manejar duplicados en destino
+        let contador = 1;
+        const nombreBase = path.parse(nombreOriginal).name;
+        const ext = path.parse(nombreOriginal).ext;
+
+        while (fs.existsSync(rutaDestino)) {
+          rutaDestino = path.join(carpetaDestino, `${nombreBase} (${contador})${ext}`);
+          contador++;
+        }
+
+        fs.copyFileSync(rutaOrigen, rutaDestino);
+        exitosos++;
+      } catch (err) {
+        console.error(`Error al copiar ${rutaOrigen}:`, err);
+        errores++;
+      }
+    }
+
+    return {
+      success: true,
+      total: archivosValidos.length,
+      exitosos,
+      errores,
+      carpeta: carpetaDestino
+    };
+  } catch (error) {
+    console.error('Error en descarga masiva:', error);
     return { success: false, error: error.message };
   }
 });
