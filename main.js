@@ -8,16 +8,12 @@ const excelParser = require('./src/utils/excel-parser');
 const { detectarAsunto, determinarTipoDocumento } = require('./src/utils/doc-utils');
 
 const driveApi = require('./src/drive/api');
+const ocrService = require('./src/ocr/ocr-service');
 
 // VARIABLES GLOBALES PARA CONTROL DE INDEXACIÓN
 let indexacionEnProgreso = false;
 let indexacionPausada = false;
 let indexacionCancelada = false;
-
-// Variables para OCR
-let ocrWindow = null;
-const ocrQueue = []; // Cola de promesas { resolve, reject, data }
-let ocrProcessing = false;
 
 // Añadir manejo de errores global
 process.on('uncaughtException', (error) => {
@@ -58,17 +54,12 @@ async function procesarArchivo(rutaArchivo) {
       // Si el texto es muy corto (probablemente escaneado), intentar OCR
       if (!info.texto || info.texto.trim().length < 100) {
         console.log(`Texto PDF insuficiente. Intentando OCR...`);
-        const ocrResult = await processWithOCR(rutaArchivo, 'pdf');
+        const ocrResult = await ocrService.processarOCR(rutaArchivo);
         if (ocrResult && ocrResult.text && ocrResult.text.length > 0) {
           info.texto = ocrResult.text;
 
-          // Si Python detectó el asunto, usarlo (Prioridad 1)
-          if (ocrResult.subject) {
-            info.asunto = ocrResult.subject;
-          } else {
-            // Usar módulo centralizado de detección de asunto
-            info.asunto = detectarAsunto(ocrResult.text) || 'Documento Escaneado (OCR)';
-          }
+          // Usar módulo centralizado de detección de asunto
+          info.asunto = detectarAsunto(ocrResult.text) || 'Documento Escaneado (OCR)';
         }
       }
       return info;
@@ -81,10 +72,11 @@ async function procesarArchivo(rutaArchivo) {
       return await excelParser.extraerTextoExcel(rutaArchivo);
     } else if (['.jpg', '.jpeg', '.png'].includes(extension)) {
       console.log(`Procesando Imagen: ${rutaArchivo}`);
-      const ocrResult = await processWithOCR(rutaArchivo, extension.substring(1));
+      const ocrResult = await ocrService.processarOCR(rutaArchivo);
       let asuntoImg = 'Imagen Escaneada';
-      if (ocrResult.subject) asuntoImg = ocrResult.subject;
-      else if (ocrResult.text) asuntoImg = ocrResult.text.substring(0, 50) + '...';
+      if (ocrResult.text) {
+        asuntoImg = detectarAsunto(ocrResult.text) || ocrResult.text.substring(0, 50) + '...';
+      }
 
       return {
         texto: ocrResult.text || '',
@@ -105,60 +97,7 @@ async function procesarArchivo(rutaArchivo) {
   }
 }
 
-const { exec } = require('child_process');
-
-// Función para procesar OCR con Python
-function processWithOCR(filePath, fileType) {
-  return new Promise((resolve, reject) => {
-    console.log(`Iniciando OCR con Python para: ${filePath}`);
-
-    // Comando para ejecutar el OCR
-    let command;
-
-    if (app.isPackaged) {
-      // Producción: Usar el ejecutable empaquetado
-      // La estructura en resources será: resources/ocr_engine/ocr_engine.exe
-      const exePath = path.join(process.resourcesPath, 'ocr_engine', 'ocr_engine.exe');
-      command = `"${exePath}" "${filePath}"`;
-      console.log(`Usando motor OCR empaquetado: ${exePath}`);
-    } else {
-      // Desarrollo: Usar python script directo
-      const pythonScript = path.join(__dirname, 'src', 'ocr', 'ocr_engine.py');
-      command = `python "${pythonScript}" "${filePath}"`;
-      console.log(`Usando script Python dev: ${pythonScript}`);
-    }
-
-    exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error al ejecutar OCR Python: ${error.message}`);
-        console.error(`Stderr: ${stderr}`);
-        resolve(''); // Fallback seguro
-        return;
-      }
-
-      try {
-        // Parsear la salida JSON
-        const result = JSON.parse(stdout);
-
-        if (result.success) {
-          console.log(`OCR Python completado. Longitud: ${result.text.length}`);
-          resolve({
-            text: result.text,
-            subject: result.subject // Now returning object instead of just text
-          });
-        } else {
-          console.error(`Error reportado por OCR Python: ${result.error}`);
-          resolve({ text: '', subject: null });
-        }
-      } catch (parseError) {
-        console.error('Error al parsear salida de Python:', parseError);
-        if (stdout.trim().length > 0) resolve({ text: stdout, subject: null });
-        else resolve({ text: '', subject: null });
-      }
-    });
-  });
-}
-// Old functions removed
+// Old processWithOCR (Python) replaced by ocrService (tesseract.js + mupdf WASM)
 
 
 
@@ -773,6 +712,14 @@ app.whenReady().then(async () => {
   await database.inicializar();
   console.log('Base de datos SQLite inicializada.');
 
+  // Inicializar servicio OCR (tesseract.js worker persistente)
+  try {
+    await ocrService.inicializar();
+    console.log('Servicio OCR inicializado.');
+  } catch (err) {
+    console.error('Error al inicializar OCR (continuando sin OCR):', err.message);
+  }
+
   createWindow();
 
   // Iniciar verificación automática de documentos nuevos
@@ -798,8 +745,11 @@ app.whenReady().then(async () => {
   console.error('Error al iniciar la aplicación:', err);
 });
 
-app.on('window-all-closed', function () {
+app.on('window-all-closed', async function () {
   console.log('Todas las ventanas cerradas');
+
+  // Terminar worker OCR
+  await ocrService.terminar();
 
   // Forzar guardado de la base de datos antes de salir
   database.forzarGuardado();

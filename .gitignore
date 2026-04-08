@@ -28,6 +28,9 @@ Thumbs.db
 
 # Database files
 *.db
+
+# Tesseract.js trained data (downloaded automatically)
+*.traineddata
 *.sqlite
 
 # Logs
