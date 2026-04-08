@@ -701,6 +701,9 @@ async function procesarListaDeDocumentos(documentos) {
   }
   console.log(mensaje);
 
+  // Forzar guardado a disco después de indexación masiva
+  database.forzarGuardado();
+
   // Resetear flag de cancelación para próxima ejecución
   indexacionCancelada = false;
 
@@ -805,8 +808,12 @@ async function indexarCarpetaEspecificaConProgreso(rutaCarpeta, filtros = {}) {
 }
 
 // Iniciar aplicación cuando Electron esté listo
-app.whenReady().then(() => {
-  console.log('Electron está listo, creando ventana...');
+app.whenReady().then(async () => {
+  console.log('Electron está listo, inicializando base de datos...');
+
+  // Inicializar SQLite antes de crear la ventana
+  await database.inicializar();
+  console.log('Base de datos SQLite inicializada.');
 
   createWindow();
 
@@ -835,6 +842,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', function () {
   console.log('Todas las ventanas cerradas');
+
+  // Forzar guardado de la base de datos antes de salir
+  database.forzarGuardado();
 
   // Detener el timer de verificación automática
   if (timerVerificacion) {
