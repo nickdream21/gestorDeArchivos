@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { determinarTipoDocumento } = require('../utils/doc-utils');
 
 // Directorio de prueba - usar uno mucho más pequeño
 let driveDirectories = [
@@ -72,27 +73,6 @@ async function listarArchivosEnCarpeta(carpetaPath) {
   } catch (error) {
     console.error(`Error al listar archivos en ${carpetaPath}: ${error.message}`);
     return [];
-  }
-}
-
-// Función auxiliar para determinar el tipo de documento basado en el nombre
-function determinarTipoDocumento(nombre) {
-  nombre = nombre.toLowerCase();
-  
-  if (nombre.includes('carta') || nombre.startsWith('carta')) {
-    return 'carta';
-  } else if (nombre.includes('informe')) {
-    return 'informe';
-  } else if (nombre.includes('contrato')) {
-    return 'contrato';
-  } else if (nombre.includes('memo') || nombre.includes('memorando')) {
-    return 'memorando';
-  } else if (nombre.includes('acta')) {
-    return 'acta';
-  } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
-    return 'resolución';
-  } else {
-    return 'otro';
   }
 }
 

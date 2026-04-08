@@ -5,6 +5,7 @@ const database = require('./src/db/database');
 const pdfParser = require('./src/utils/pdf-parser');
 const wordParser = require('./src/utils/word-parser');
 const excelParser = require('./src/utils/excel-parser');
+const { detectarAsunto, determinarTipoDocumento } = require('./src/utils/doc-utils');
 
 const driveApi = require('./src/drive/api');
 
@@ -65,12 +66,8 @@ async function procesarArchivo(rutaArchivo) {
           if (ocrResult.subject) {
             info.asunto = ocrResult.subject;
           } else {
-            // Si no, intentar NLP JS (Fallback)
-            const nlp = require('compromise');
-            const doc = nlp(ocrResult.text.substring(0, 1000));
-            const topics = doc.topics().out('array');
-            if (topics.length > 0) info.asunto = topics[0];
-            else info.asunto = "Documento Escaneado (OCR)";
+            // Usar módulo centralizado de detección de asunto
+            info.asunto = detectarAsunto(ocrResult.text) || 'Documento Escaneado (OCR)';
           }
         }
       }
@@ -359,25 +356,7 @@ async function indexarCarpetaEspecifica(rutaCarpeta) {
     }
 
     // Función auxiliar para determinar el tipo de documento
-    function determinarTipoDocumento(nombre) {
-      nombre = nombre.toLowerCase();
-
-      if (nombre.includes('carta') || nombre.startsWith('carta')) {
-        return 'carta';
-      } else if (nombre.includes('informe')) {
-        return 'informe';
-      } else if (nombre.includes('contrato')) {
-        return 'contrato';
-      } else if (nombre.includes('memo') || nombre.includes('memorando')) {
-        return 'memorando';
-      } else if (nombre.includes('acta')) {
-        return 'acta';
-      } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
-        return 'resolución';
-      } else {
-        return 'otro';
-      }
-    }
+    // (usa función centralizada de doc-utils)
 
     // Obtener todos los archivos válidos de la carpeta
     const documentos = obtenerArchivosValidos(rutaCarpeta);
@@ -457,27 +436,6 @@ function formatearTiempo(segundos) {
   const minutos = Math.floor(segundos / 60);
   const segs = segundos % 60;
   return `${minutos.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}`;
-}
-
-// Función auxiliar para determinar el tipo de documento por nombre (Globalizada)
-function determinarTipoDocumento(nombre) {
-  nombre = nombre.toLowerCase();
-
-  if (nombre.includes('carta') || nombre.startsWith('carta')) {
-    return 'carta';
-  } else if (nombre.includes('informe')) {
-    return 'informe';
-  } else if (nombre.includes('contrato')) {
-    return 'contrato';
-  } else if (nombre.includes('memo') || nombre.includes('memorando')) {
-    return 'memorando';
-  } else if (nombre.includes('acta')) {
-    return 'acta';
-  } else if (nombre.includes('resolucion') || nombre.includes('resolución')) {
-    return 'resolución';
-  } else {
-    return 'otro';
-  }
 }
 
 // Función centralizada para procesar una lista de documentos con progreso
